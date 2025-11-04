@@ -1,0 +1,448 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<title>Build-a-Plate</title>
+<style>
+  body{font-family:Arial;margin:18px}
+  #top{display:flex;gap:20px;align-items:flex-start}
+  #palette{width:300px;border:1px solid #ddd;padding:10px;border-radius:6px}
+  .food{display:flex;align-items:center;gap:8px;padding:6px;border-radius:6px;margin-bottom:8px;background:#fafafa;cursor:grab}
+  .food img{width:48px;height:48px;object-fit:cover;border-radius:6px}
+  #platecard{width:700px;height:420px;border:1px solid #ddd;border-radius:8px;position:relative;background:linear-gradient(#fff,#f6f6f6);padding:20px;box-sizing:border-box;overflow:visible}
+  #plateWrapper{position:relative;width:420px;height:420px}
+  #plate{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:360px;height:360px;border-radius:50%;background:#fff6e6;border:8px solid #eee;box-shadow:0 2px 4px rgba(0,0,0,0.06);overflow:visible;display:block}
+  .placed{position:absolute;transform:translate(-50%,-50%);pointer-events:auto;border-radius:6px}
+  #controls{margin-top:12px}
+  button{padding:8px 12px;border-radius:6px;border:1px solid #bbb;background:#fff;cursor:pointer}
+  #summary{margin-top:10px}
+  .small{font-size:13px;color:#555}
+  .side-placed{position:absolute}
+  #platecard { overflow: visible; }
+  .food:active { cursor:grabbing; }
+  @media (max-width:900px){ #top{flex-direction:column} #platecard{width:100%;} #palette{width:100%;} }
+  .placed { object-fit:cover; }
+  #payloadBox { white-space:pre-wrap; font-family:monospace; border:1px dashed #ccc; padding:10px; margin-top:10px; display:none; max-height:220px; overflow:auto; background:#fafafa }
+  #submitStatus { margin-top:8px; font-size:13px; color:#333 }
+</style>
+</head>
+<body>
+  <h3>Build a Plate — click to add</h3>
+  <div id="top">
+    <div id="palette">
+      <strong>Food palette</strong>
+      <div class="small">Click an item to add one portion.</div>
+      <div id="foods" style="margin-top:8px"></div>
+    </div>
+
+    <div id="platecard">
+      <div id="plateWrapper">
+        <div id="plate"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="controls">
+    <label>Name (optional) <input id="name" type="text"/></label>
+    <button id="clear">Clear plate</button>
+    <button id="submit">Submit plate</button>
+    <div id="submitStatus"></div>
+    <div id="payloadBox"></div>
+    <div id="summary"></div>
+  </div>
+
+<script>
+//  CONFIG   
+const WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbyJr4MdhznczZ4AzAF7sBNn_pzyq6ZifR5TXMSgs3SGZiJ0_zTyJxESr5cMjSuDp4qXuA/exec';
+
+//  CATALOG & LAYOUT  
+const FOOD_CATALOG = [
+  {id:'potato', label:'Potato', kcal:160, img:'images/potato.svg', placement:'onplate'},
+  {id:'sausage', label:'Sausage', kcal:250, img:'images/sausage.svg', placement:'onplate'},
+  {id:'carrot', label:'Carrot', kcal:25, img:'images/carrot.svg', placement:'onplate'},
+  {id:'bread', label:'Bread slice', kcal:80, img:'images/slice-of-bread.svg', placement:'side', hasOptions:true},
+  {id:'bread_butter', label:'Bread with butter', kcal:80 + 102, img:'images/bread-with-butter.svg', placement:'side', hidden:true},
+  {id:'bread_butter_cheese', label:'Bread with butter and cheese', kcal:80 + 102 + 110, img:'images/cheese-bread.svg', placement:'side', hidden:true},
+  {id:'cheese', label:'Cheese', kcal:110, img:'images/cheese.svg', placement:'onplate', hidden:true},
+  {id:'butter', label:'Butter', kcal:102, img:'images/butter.svg', placement:'onplate', hidden:true},
+  {id:'apple', label:'Apple', kcal:95, img:'images/apple.svg', placement:'side'},
+  {id:'water', label:'Water (glass)', kcal:0, img:'images/glass-of-water.svg', placement:'side'},
+  {id:'milk', label:'Milk (carton)', kcal:150, img:'images/milk-carton.svg', placement:'side'}
+];
+
+const PLATE_DIAMETER = 360;
+const SIZE_MAP = {
+  potato: 78,
+  sausage: Math.round(78 * 1.25),
+  carrot: 34,
+  bread: 56,
+  bread_butter: 56,
+  bread_butter_cheese: 56,
+  cheese: 42,
+  butter: 28,
+  apple: 68,
+  water: 50,
+  milk: 50
+};
+const SIDE_SLOT_GAP_PX = 38;
+const OVERLAP_FACTOR = 0.88;
+
+const state = { placedInstances: [] }; // {id,label,kcal,x,y,sizePx,rotationDeg,placement,sideSlot}
+
+//  HELPERS   
+function catalogFind(id){ return FOOD_CATALOG.find(it=>it.id===id); }
+function dist(a,b){ const dx=a.x-b.x, dy=a.y-b.y; return Math.sqrt(dx*dx+dy*dy); }
+
+function collidesWithOnPlate(candidate) {
+  for(const inst of state.placedInstances) {
+    if(inst.placement !== 'onplate') continue;
+    const minDist = (candidate.sizePx/2 + inst.sizePx/2) * OVERLAP_FACTOR;
+    if(dist(candidate, inst) < minDist) return true;
+  }
+  const cx = PLATE_DIAMETER/2, cy = PLATE_DIAMETER/2;
+  const dx = candidate.x - cx, dy = candidate.y - cy;
+  const radius = PLATE_DIAMETER/2 - Math.max(8, candidate.sizePx/2);
+  if(Math.sqrt(dx*dx + dy*dy) > radius) return true;
+  return false;
+}
+
+//  UI BUILD   
+const foodsDiv = document.getElementById('foods');
+foodsDiv.innerHTML = '';
+
+function makeFoodTile(item) {
+  const el = document.createElement('div');
+  el.className = 'food';
+  el.dataset.id = item.id;
+  el.setAttribute('draggable','true');
+  el.innerHTML = `<img src="${item.img}" alt="${item.label}"><div><strong>${item.label}</strong><div class="small">${item.kcal} kcal/portion</div></div>`;
+  return el;
+}
+
+FOOD_CATALOG.forEach(item => {
+  if(item.hidden) return;
+  const tile = makeFoodTile(item);
+
+  tile.addEventListener('dragstart', (ev) => {
+    ev.dataTransfer.setData('text/plain', tile.dataset.id || '');
+    try { ev.dataTransfer.setDragImage(tile.querySelector('img'), 24, 24); } catch(e){}
+  });
+
+  if(item.hasOptions) {
+    const opts = document.createElement('div');
+    opts.style.marginTop = '6px';
+    opts.innerHTML = `
+      <button data-action="addSlice" style="padding:4px 8px;border-radius:4px;margin-right:6px">Add slice</button>
+      <button data-action="addButter" style="padding:4px 8px;border-radius:4px;margin-right:6px">Add butter</button>
+      <button data-action="addCheese" style="padding:4px 8px;border-radius:4px" disabled>Add cheese</button>
+    `;
+    tile.appendChild(opts);
+
+    const btnAddSlice = opts.querySelector('button[data-action="addSlice"]');
+    const btnAddButter = opts.querySelector('button[data-action="addButter"]');
+    const btnAddCheese = opts.querySelector('button[data-action="addCheese"]');
+
+    tile.addEventListener('click', (ev) => {
+      if (ev.target.closest('button')) return;
+      addInstanceToPlate('bread', 1, {});
+    });
+
+    btnAddSlice.addEventListener('click', (ev) => { ev.stopPropagation(); addInstanceToPlate('bread', 1, {}); });
+
+    btnAddButter.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      const idxPlain = state.placedInstances.findIndex(p => p.id === 'bread' && p.placement === 'side');
+      if(idxPlain >= 0) {
+        const prev = state.placedInstances[idxPlain];
+        const slot = prev.sideSlot;
+        state.placedInstances.splice(idxPlain, 1, {
+          id: 'bread_butter',
+          label: catalogFind('bread_butter').label,
+          kcal: catalogFind('bread_butter').kcal,
+          x: prev.x, y: prev.y,
+          sizePx: SIZE_MAP['bread_butter'],
+          rotationDeg: 0, placement: 'side', sideSlot: slot
+        });
+      } else {
+        addInstanceToPlate('bread_butter', 1, {});
+      }
+      btnAddCheese.disabled = !state.placedInstances.some(p => p.id === 'bread_butter');
+      renderPlate(); updateSummary();
+    });
+
+    btnAddCheese.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      const idxButter = state.placedInstances.findIndex(p => p.id === 'bread_butter' && p.placement === 'side');
+      if(idxButter >= 0) {
+        const prev = state.placedInstances[idxButter];
+        const slot = prev.sideSlot;
+        state.placedInstances.splice(idxButter, 1, {
+          id: 'bread_butter_cheese',
+          label: catalogFind('bread_butter_cheese').label,
+          kcal: catalogFind('bread_butter_cheese').kcal,
+          x: prev.x, y: prev.y,
+          sizePx: SIZE_MAP['bread_butter_cheese'],
+          rotationDeg: 0, placement: 'side', sideSlot: slot
+        });
+      }
+      btnAddCheese.disabled = !state.placedInstances.some(p => p.id === 'bread_butter');
+      renderPlate(); updateSummary();
+    });
+
+    btnAddCheese.disabled = !state.placedInstances.some(p => p.id === 'bread_butter');
+
+  } else {
+    tile.addEventListener('click', (ev)=>{
+      const add = ev.shiftKey ? 3 : 1;
+      addInstanceToPlate(item.id, add, {});
+    });
+  }
+
+  foodsDiv.appendChild(tile);
+});
+
+//  SIDE SLOTS   
+function computeSideSlots() {
+  const plateCard = document.getElementById('platecard');
+  const plateEl = document.getElementById('plate');
+  const cardRect = plateCard.getBoundingClientRect();
+  const plateRect = plateEl.getBoundingClientRect();
+  const plateRightInCard = plateRect.right - cardRect.left;
+  const gap = Math.max(8, Math.round(PLATE_DIAMETER * 0.02));
+  const columnX = Math.min(plateCard.clientWidth - 30, Math.round(plateRightInCard + gap));
+  const slotStartY = 40;
+  const slotSpacing = SIDE_SLOT_GAP_PX;
+  const slotBaseHeight = 40;
+  const availableHeight = plateCard.clientHeight - slotStartY - 20;
+  const slotStep = slotBaseHeight + slotSpacing;
+  const maxSlots = Math.max(4, Math.floor(availableHeight / slotStep));
+  const slots = [];
+  for(let i=0;i<maxSlots;i++){
+    slots.push({ x: columnX, y: slotStartY + i * slotStep });
+  }
+  return slots;
+}
+function reserveSideSlot() {
+  const slots = computeSideSlots();
+  const occupied = new Set(state.placedInstances.filter(p=>p.placement==='side' && typeof p.sideSlot === 'number').map(p=>p.sideSlot));
+  for(let i=0;i<slots.length;i++) if(!occupied.has(i)) return i;
+  return slots.length;
+}
+
+//  ADD with overlap avoidance   
+function addInstanceToPlate(id, count=1, options={}) {
+  const item = catalogFind(id); if(!item) { console.warn('Unknown catalog id', id); return; }
+  for(let i=0;i<count;i++){
+    const sizePx = SIZE_MAP[id] || SIZE_MAP[item.id] || Math.round(PLATE_DIAMETER * 0.10);
+    const rotationDeg = (item.placement === 'onplate') ? (Math.random()*34 - 17) : 0;
+    let x,y, sideSlot;
+    if(item.placement === 'onplate') {
+      const cx = PLATE_DIAMETER/2, cy = PLATE_DIAMETER/2, rMin = 30;
+      const rMax = PLATE_DIAMETER/2 - sizePx/2 - 8;
+      let attempts=0, candidate;
+      const maxAttempts = 60;
+      do {
+        const angle = Math.random() * Math.PI * 2;
+        const radius = rMin + Math.random() * Math.max(0, rMax - rMin);
+        candidate = { x: Math.round(cx + Math.cos(angle) * radius), y: Math.round(cy + Math.sin(angle) * radius), sizePx };
+        attempts++;
+      } while(collidesWithOnPlate(candidate) && attempts < maxAttempts);
+      x = candidate.x; y = candidate.y;
+    } else {
+      sideSlot = reserveSideSlot();
+      const slots = computeSideSlots();
+      const chosenSlot = slots[Math.min(sideSlot, slots.length-1)];
+      x = chosenSlot.x; y = chosenSlot.y + Math.round(sizePx/2);
+    }
+    state.placedInstances.push({ id: item.id, label: item.label, kcal: item.kcal, x, y, sizePx, rotationDeg, placement: item.placement, sideSlot: (typeof sideSlot==='number'?sideSlot:undefined) });
+  }
+  renderPlate(); updateSummary();
+}
+
+//  RENDER   
+const plateEl = document.getElementById('plate');
+const plateCard = document.getElementById('platecard');
+
+function renderPlate(){
+  plateEl.innerHTML = '';
+  Array.from(plateCard.querySelectorAll('.side-placed')).forEach(n=>n.remove());
+  plateEl.style.width = PLATE_DIAMETER + 'px'; plateEl.style.height = PLATE_DIAMETER + 'px';
+  const slots = computeSideSlots();
+  state.placedInstances.forEach((inst, idx) => {
+    const catalogItem = catalogFind(inst.id) || {};
+    const img = document.createElement('img');
+    img.src = catalogItem.img || ('images/' + inst.id + '.svg');
+    img.alt = inst.label || inst.id; img.className = 'placed';
+    img.style.width = inst.sizePx + 'px'; img.style.height = inst.sizePx + 'px';
+    img.style.pointerEvents = 'auto'; img.style.transition = 'transform 120ms ease-out';
+    img.style.zIndex = 10 + idx; img.title = `${inst.label} — ${inst.kcal} kcal`;
+    if(inst.placement === 'onplate') {
+      img.style.left = inst.x + 'px'; img.style.top = inst.y + 'px';
+      img.style.transform = `translate(-50%,-50%) rotate(${inst.rotationDeg}deg)`;
+      img.addEventListener('click', ()=> { state.placedInstances.splice(idx,1); renderPlate(); updateSummary(); });
+      plateEl.appendChild(img);
+    } else {
+      img.classList.add('side-placed'); img.style.position = 'absolute';
+      const slotIndex = (typeof inst.sideSlot === 'number') ? inst.sideSlot : reserveSideSlot();
+      const chosenSlot = slots[Math.min(slotIndex, slots.length-1)];
+      const left = Math.min(Math.max(chosenSlot.x, 10), plateCard.clientWidth - 10);
+      const top = Math.min(Math.max(chosenSlot.y + Math.round((inst.sizePx||40)/2), 10), plateCard.clientHeight - 10);
+      img.style.left = left + 'px'; img.style.top = top + 'px'; img.style.transform = 'translate(-50%,-50%)';
+      img.addEventListener('click', ()=> { state.placedInstances.splice(idx,1); renderPlate(); updateSummary(); });
+      plateCard.appendChild(img);
+    }
+  });
+  updateSummary();
+}
+
+//  SUMMARY / CLEAR   
+function updateSummary() {
+  const sumDiv = document.getElementById('summary');
+  if(state.placedInstances.length === 0) { sumDiv.innerHTML = '<div class="small">Plate is empty</div>'; return; }
+  const agg = {}; let totalKcal = 0;
+  state.placedInstances.forEach(it=>{ agg[it.id] = agg[it.id] || {label: it.label, count:0, kcal: it.kcal}; agg[it.id].count++; totalKcal += it.kcal; });
+  let html = `<div><strong>Total kcal:</strong> ${totalKcal}</div>`;
+  html += '<div class="small" style="margin-top:6px"><strong>Contents</strong></div>';
+  html += '<ul class="small" style="margin:6px 0 0 18px;padding:0">';
+  Object.values(agg).forEach(a=>{ html += `<li>${a.label}: ${a.count} portion${a.count>1?'s':''} (${a.kcal} kcal each)</li>`; });
+  html += '</ul>';
+  sumDiv.innerHTML = html;
+}
+
+document.getElementById('clear').addEventListener('click', ()=>{ state.placedInstances = []; renderPlate(); updateSummary(); });
+
+// Submit: send form-encoded payload ( alerts for success/failure)
+const submitStatus = document.getElementById('submitStatus'); // ensure this element exists in your HTML
+// Submit: background POST (form-encoded), simple alerts for success/failure
+document.getElementById('submit').addEventListener('click', async () => {
+  const nameEl = document.getElementById('name');
+  const name = nameEl ? nameEl.value.trim() : '';
+
+  if (state.placedInstances.length === 0) {
+    alert('Plate is empty. Add items before submitting.');
+    return;
+  }
+
+  // build payload
+  const agg = {};
+  state.placedInstances.forEach(it => {
+    agg[it.id] = agg[it.id] || { id: it.id, label: it.label, kcal: it.kcal, count: 0 };
+    agg[it.id].count++;
+  });
+  const items = Object.values(agg);
+  const kcalTotal = items.reduce((s, it) => s + it.kcal * it.count, 0);
+  const payloadObj = { name: name || 'anonymous', timestamp: new Date().toISOString(), items, kcalTotal };
+  const payloadJson = JSON.stringify(payloadObj);
+
+  // Validate WEB_APP_URL using a strict exec-URL pattern
+  const validExec = /^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec$/;
+  if (!WEB_APP_URL || !validExec.test(WEB_APP_URL)) {
+    console.log('Invalid WEB_APP_URL detected:', WEB_APP_URL);
+    alert('Server URL not configured or invalid. Open DevTools Console to see the current WEB_APP_URL.');
+    return;
+  }
+
+  try {
+    const form = new URLSearchParams();
+    form.append('payload', payloadJson);
+
+    const res = await fetch(WEB_APP_URL, { method: 'POST', body: form });
+
+    if (!res.ok) {
+      const txt = await res.text().catch(()=>res.statusText || '');
+      console.error('Submit failed', res.status, txt);
+      alert('Submit failed: ' + (txt || res.status));
+      return;
+    }
+
+    const json = await res.json().catch(()=>null);
+    if (json && json.status === 'ok') {
+      alert('Submission successful');
+      state.placedInstances = [];
+      renderPlate();
+      updateSummary();
+    } else {
+      console.warn('Submit returned unexpected response', json);
+      alert('Submission returned an unexpected response; check console.');
+    }
+  } catch (err) {
+    console.error('Submit error', err);
+    alert('Network error while submitting. Check console for details.');
+  }
+});
+
+//  Drag & Drop   
+plateEl.addEventListener('dragover', (e) => { e.preventDefault(); });
+plateEl.addEventListener('drop', (e) => {
+  e.preventDefault();
+  const id = e.dataTransfer.getData('text/plain'); if(!id) return;
+  const item = catalogFind(id); if(!item) return;
+  const rect = plateEl.getBoundingClientRect();
+  const localX = e.clientX - rect.left; const localY = e.clientY - rect.top;
+  if(item.placement === 'onplate') {
+    const sizePx = SIZE_MAP[id] || SIZE_MAP[item.id] || Math.round(PLATE_DIAMETER * 0.10);
+    const candidate = { x: Math.min(Math.max(Math.round(localX), 10), PLATE_DIAMETER - 10), y: Math.min(Math.max(Math.round(localY), 10), PLATE_DIAMETER - 10), sizePx };
+    let placed = false;
+    if(!collidesWithOnPlate(candidate)) {
+      state.placedInstances.push({ id:item.id, label:item.label, kcal:item.kcal, x:candidate.x, y:candidate.y, sizePx, rotationDeg:(Math.random()*34 - 17), placement:item.placement });
+      placed = true;
+    } else {
+      const maxAttempts = 30;
+      for(let a=0;a<maxAttempts && !placed;a++){
+        const ang = Math.random()*Math.PI*2;
+        const rad = 10 + a * 6;
+        const cx = candidate.x + Math.round(Math.cos(ang)*rad);
+        const cy = candidate.y + Math.round(Math.sin(ang)*rad);
+        const cand = { x: cx, y: cy, sizePx };
+        if(!collidesWithOnPlate(cand)) {
+          state.placedInstances.push({ id:item.id, label:item.label, kcal:item.kcal, x:cand.x, y:cand.y, sizePx, rotationDeg:(Math.random()*34 - 17), placement:item.placement });
+          placed = true;
+        }
+      }
+    }
+    if(!placed) addInstanceToPlate(item.id, 1, {});
+    else { renderPlate(); updateSummary(); }
+  } else {
+    const cardRect = plateCard.getBoundingClientRect();
+    const localYcard = e.clientY - cardRect.top;
+    const slots = computeSideSlots();
+    let nearest = 0, minD = Infinity;
+    for(let i=0;i<slots.length;i++){
+      const d = Math.abs(localYcard - slots[i].y);
+      if(d < minD){ minD = d; nearest = i; }
+    }
+    const sizePx = SIZE_MAP[id] || SIZE_MAP[item.id] || Math.round(PLATE_DIAMETER * 0.09);
+    state.placedInstances.push({ id:item.id, label:item.label, kcal:item.kcal, x: slots[Math.min(nearest, slots.length-1)].x, y: slots[Math.min(nearest, slots.length-1)].y + Math.round(sizePx/2), sizePx, rotationDeg:0, placement:'side', sideSlot:nearest });
+    renderPlate(); updateSummary();
+  }
+});
+
+plateCard.addEventListener('dragover', (e) => { e.preventDefault(); });
+plateCard.addEventListener('drop', (e) => {
+  e.preventDefault();
+  const id = e.dataTransfer.getData('text/plain'); if(!id) return;
+  const item = catalogFind(id); if(!item) return;
+  const plateRect = plateEl.getBoundingClientRect();
+  if(e.clientX >= plateRect.left && e.clientX <= plateRect.right && e.clientY >= plateRect.top && e.clientY <= plateRect.bottom) {
+    const ev = new DragEvent('drop', { bubbles: true, cancelable: true, clientX: e.clientX, clientY: e.clientY, dataTransfer: e.dataTransfer });
+    plateEl.dispatchEvent(ev);
+    return;
+  }
+  const cardRect = plateCard.getBoundingClientRect();
+  const localYcard = e.clientY - cardRect.top;
+  const slots = computeSideSlots();
+  let nearest = 0, minD = Infinity;
+  for(let i=0;i<slots.length;i++){
+    const d = Math.abs(localYcard - slots[i].y);
+    if(d < minD){ minD = d; nearest = i; }
+  }
+  const sizePx = SIZE_MAP[id] || SIZE_MAP[item.id] || Math.round(PLATE_DIAMETER * 0.09);
+  state.placedInstances.push({ id:item.id, label:item.label, kcal:item.kcal, x: slots[Math.min(nearest, slots.length-1)].x, y: slots[Math.min(nearest, slots.length-1)].y + Math.round(sizePx/2), sizePx, rotationDeg:0, placement:'side', sideSlot:nearest });
+  renderPlate(); updateSummary();
+});
+
+// initial
+renderPlate(); updateSummary();
+</script>
+</body>
+</html>
