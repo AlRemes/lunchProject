@@ -513,10 +513,9 @@ async function compareToTarget(targetPayload, options = {}) {
   overlay.style.zIndex = 2000;
   document.body.appendChild(overlay);
 
-  // gray out underlying plate visually
-  plateCard.style.transition = 'filter 300ms ease, opacity 300ms ease';
-  plateCard.style.filter = 'grayscale(1)';
-  plateCard.style.opacity = '0.45';
+
+  // do not gray by default — gray only when we animate the overlay
+// when starting animation, we'll set these styles
 
   // For each anchor position, create an overlay image and compute its target scale
   const maxScale = 2.4;
@@ -554,6 +553,10 @@ async function compareToTarget(targetPayload, options = {}) {
     created.push({ img, scale, id, anchor });
   });
 
+  // apply gray-out just before animating so the base stays normal initially
+  plateCard.style.transition = 'filter 300ms ease, opacity 300ms ease';
+  plateCard.style.filter = 'grayscale(1)';
+  plateCard.style.opacity = '0.45';
   // Force reflow then animate
   requestAnimationFrame(() => {
     created.forEach(c => {
@@ -612,7 +615,11 @@ document.getElementById('cmpRecommended').addEventListener('click', async () => 
     if (!res.ok) { alert('Failed to fetch recommended'); return; }
     const json = await res.json();
     // convert recommended items to standard payload shape: items: [{id,label,count,kcal}]
-    const items = (json.items || []).map(it => ({ id: it.id, label: it.label, count: Math.round(it.avgPerSubmission || it.totalCount || 0), kcal: it.totalKcal ? Math.round(it.totalKcal / Math.max(1, it.totalCount)) : 0 }));
+    const items = (json.items || []).map(it => {
+    const avg = (it.avgPerSubmission !== undefined && it.avgPerSubmission !== null) ? Number(it.avgPerSubmission) : (it.totalCount || 0);
+    const count = avg > 0 && avg < 1 ? 1 : Math.round(avg);
+    return { id: it.id, label: it.label, count, kcal: it.totalKcal ? Math.round(it.totalKcal / Math.max(1, it.totalCount)) : 0 };
+  });
     const targetPayload = { items };
     compareToTarget(targetPayload, { title: 'Recommended vs Estimate', anchorPositions: state.placedInstances });
   } catch (err) {
@@ -802,6 +809,7 @@ renderPlate(); updateSummary();
 </body>
 
 </html>
+
 
 
 
