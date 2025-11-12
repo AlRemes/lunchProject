@@ -299,14 +299,21 @@ function renderPlate(){
   const slots = computeSideSlots();
   state.placedInstances.forEach((inst, idx) => {
     const catalogItem = catalogFind(inst.id) || {};
+    // create image and set common styles
     const img = document.createElement('img');
     img.src = catalogItem.img || ('images/' + inst.id + '.svg');
-    img.alt = inst.label || inst.id; img.className = 'placed';
-    img.style.width = inst.sizePx + 'px'; img.style.height = inst.sizePx + 'px';
-    img.style.pointerEvents = 'auto'; img.style.transition = 'transform 120ms ease-out';
-    img.style.zIndex = 10 + idx; img.title = `${inst.label} — ${inst.kcal} kcal`;
-    if(inst.placement === 'onplate') {
-      img.style.left = inst.x + 'px'; img.style.top = inst.y + 'px';
+    img.alt = inst.label || inst.id;
+    img.className = 'placed';
+    img.style.position = 'absolute';           // ensure left/top take effect
+    img.style.width = inst.sizePx + 'px';
+    img.style.height = inst.sizePx + 'px';
+    img.style.pointerEvents = 'auto';
+    img.style.transition = 'transform 120ms ease-out';
+    img.style.zIndex = 10 + idx;
+    img.title = `${inst.label} — ${inst.kcal} kcal`;
+    if (inst.placement === 'onplate') {
+      img.style.left = inst.x + 'px';
+      img.style.top = inst.y + 'px';
       img.style.transform = `translate(-50%,-50%) rotate(${inst.rotationDeg}deg)`;
       img.addEventListener('click', ()=> { state.placedInstances.splice(idx,1); renderPlate(); updateSummary(); });
       plateEl.appendChild(img);
@@ -806,6 +813,7 @@ renderPlate(); updateSummary();
 </body>
 
 </html>
+
 
 
 
