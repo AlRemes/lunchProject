@@ -548,17 +548,19 @@ async function compareToTarget(targetPayload, options = {}) {
   });
 
   // apply gray-out just before animating so the base stays normal until the moment of comparison
+
+
+  // Force reflow then animate
+  requestAnimationFrame(() => {
   plateCard.style.transition = 'filter 300ms ease, opacity 300ms ease';
   plateCard.style.filter = 'grayscale(1)';
   plateCard.style.opacity = '0.45';
 
-  // Force reflow then animate
-  requestAnimationFrame(() => {
-    created.forEach(c => {
-      c.img.style.opacity = '1';
-      c.img.style.transform = `translate(-50%,-50%) scale(${c.scale})`;
-    });
+  created.forEach(c => {
+    c.img.style.opacity = '1';
+    c.img.style.transform = `translate(-50%,-50%) scale(${c.scale})`;
   });
+});
 
   // After animation, show small textual summary
   setTimeout(() => {
@@ -804,6 +806,7 @@ renderPlate(); updateSummary();
 </body>
 
 </html>
+
 
 
 
