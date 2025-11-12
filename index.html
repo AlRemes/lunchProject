@@ -53,7 +53,7 @@
 
 <script>
 //  CONFIG   
-const WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbx1Bw8z_LySumyGjFbG7W0jnKZ7PLXlNqxF9Fj8uESUnEAd3QCbonckUuD0ElEENQxzCA/exec';
+const WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbxEpMGjGgkn8a7_RG0-fSyPj-IZny88ZChcqtQ_ks1ALOv0bxrKYTmLy8pSjx0A5euX5A/exec';
 
 //  CATALOG & LAYOUT  
 const FOOD_CATALOG = [
@@ -317,14 +317,7 @@ function updateSummary() {
   if (!controls) return;
 
   // Save session row
-  const saveRow = document.createElement('div');
-  saveRow.style.marginTop = '10px';
-  saveRow.innerHTML = `
-    <input id="sessionLabel" placeholder="Session label (e.g., Estimate A)" style="margin-right:8px">
-    <button id="saveSessionBtn">Save session</button>
-    <span id="saveSessionStatus" style="margin-left:10px;color:#333"></span>
-  `;
-  controls.insertBefore(saveRow, controls.firstChild);
+  <button id="openComparisons">Open comparisons</button>
 
   // Comparison panel
   const compPanel = document.createElement('div');
@@ -355,6 +348,46 @@ async function postPayload(payloadObj) {
   const json = await res.json().catch(()=>null);
   return json;
 }
+// helper that posts payload and returns server json
+async function postPayloadForm(payloadObj) {
+  const form = new URLSearchParams();
+  form.append('payload', JSON.stringify(payloadObj));
+  const res = await fetch(WEB_APP_URL, { method: 'POST', body: form });
+  const json = await res.json().catch(()=>null);
+  return json;
+}
+
+// auto-save + navigate to compare page
+document.getElementById('openComparisons').addEventListener('click', async () => {
+  if (!state.placedInstances || state.placedInstances.length === 0) { alert('Build the plate first'); return; }
+  const label = 'Session ' + (new Date()).toLocaleString();
+  // payload includes positions so the compare page can anchor items exactly
+  const payload = {
+    name: 'presenter',
+    timestamp: new Date().toISOString(),
+    sessionLabel: label,
+    items: state.placedInstances.map(it=>({ id: it.id, label: it.label, count: 1, kcal: it.kcal || 0 })),
+    positions: state.placedInstances.map(it=>({ id: it.id, x: it.x, y: it.y, sizePx: it.sizePx, rotationDeg: it.rotationDeg, placement: it.placement, sideSlot: it.sideSlot }))
+  };
+  try {
+    const resp = await postPayloadForm(payload); // form-encoded -> avoids preflight
+    if (!resp) { alert('Save failed'); return; }
+    // server returns sessionId if saved as session
+    const sessionId = resp.sessionId || resp.sessionId || resp.sessionId;
+    // fallback: if server didn't send id, still open compare page and pass positions via sessionStorage
+    if (sessionId) {
+      // navigate with session id
+      window.location.href = 'compare.html?sessionId=' + encodeURIComponent(sessionId);
+    } else {
+      // fallback: save positions into sessionStorage and navigate without id
+      sessionStorage.setItem('plate_positions_fallback', JSON.stringify(payload));
+      window.location.href = 'compare.html';
+    }
+  } catch (err) {
+    console.error('Auto-save failed', err);
+    alert('Auto-save failed; see console');
+  }
+});
 
 // Save session handler
 document.addEventListener('click', (ev) => {
@@ -735,3 +768,4 @@ renderPlate(); updateSummary();
 </body>
 
 </html>
+
