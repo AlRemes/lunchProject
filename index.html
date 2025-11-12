@@ -501,44 +501,37 @@ async function compareToTarget(targetPayload, options = {}) {
     Object.assign(targetCounts, targetPayload.itemsMap);
   }
 
-  // build overlay container
-  const plateCardRect = plateCard.getBoundingClientRect();
+  // build overlay container (use plate element rect because anchor x/y are relative to #plate)
+  const plateRect = plateEl.getBoundingClientRect();
   const overlay = document.createElement('div');
   overlay.style.position = 'absolute';
-  overlay.style.left = plateCardRect.left + 'px';
-  overlay.style.top = plateCardRect.top + 'px';
-  overlay.style.width = plateCardRect.width + 'px';
-  overlay.style.height = plateCardRect.height + 'px';
+  overlay.style.left = plateRect.left + 'px';
+  overlay.style.top = plateRect.top + 'px';
+  overlay.style.width = plateRect.width + 'px';
+  overlay.style.height = plateRect.height + 'px';
   overlay.style.pointerEvents = 'none';
   overlay.style.zIndex = 2000;
   document.body.appendChild(overlay);
-
-
-  // do not gray by default — gray only when we animate the overlay
-// when starting animation, we'll set these styles
 
   // For each anchor position, create an overlay image and compute its target scale
   const maxScale = 2.4;
   const minScale = 0.3;
   const created = [];
-  anchorPositions.forEach((anchor, i) => {
-    // find anchor count and compute target count for this id
+  anchorPositions.forEach((anchor) => {
     const id = anchor.id;
     const anchorCount = anchorCounts[id] || 1;
     const tgtCount = Math.max(0, targetCounts[id] || 0);
-    // scale by ratio of counts; area-based scale -> use sqrt of ratio
-    const ratio = (anchorCount === 0) ? (tgtCount > 0 ? (tgtCount) : 0) : (tgtCount / anchorCount);
+    const ratio = (anchorCount === 0) ? (tgtCount > 0 ? tgtCount : 0) : (tgtCount / anchorCount);
     let scale = Math.sqrt(Math.max(0.0001, ratio));
     if (!isFinite(scale) || scale <= 0) scale = 0.01;
     scale = Math.min(maxScale, Math.max(minScale, scale));
 
-    // position overlayed image at the same absolute position
     const img = document.createElement('img');
     const catalogItem = catalogFind(id) || {};
     img.src = catalogItem.img || ('images/' + id + '.svg');
     img.style.position = 'absolute';
-    // absolute coords relative to document:
-    const plateRect = plateCard.getBoundingClientRect();
+
+    // absolute coords relative to document: use plateRect + anchor.x/y
     const absX = plateRect.left + anchor.x;
     const absY = plateRect.top + anchor.y;
     img.style.left = absX + 'px';
@@ -546,17 +539,19 @@ async function compareToTarget(targetPayload, options = {}) {
     img.style.width = (anchor.sizePx || 40) + 'px';
     img.style.height = (anchor.sizePx || 40) + 'px';
     img.style.transform = 'translate(-50%,-50%) scale(0.001)';
+    img.style.transformOrigin = '50% 50%';
     img.style.transition = `transform ${animateMs}ms cubic-bezier(.2,.9,.2,1), opacity ${animateMs}ms ease`;
-    img.style.opacity = '0.0';
+    img.style.opacity = '0';
     img.style.pointerEvents = 'none';
     overlay.appendChild(img);
     created.push({ img, scale, id, anchor });
   });
 
-  // apply gray-out just before animating so the base stays normal initially
+  // apply gray-out just before animating so the base stays normal until the moment of comparison
   plateCard.style.transition = 'filter 300ms ease, opacity 300ms ease';
   plateCard.style.filter = 'grayscale(1)';
   plateCard.style.opacity = '0.45';
+
   // Force reflow then animate
   requestAnimationFrame(() => {
     created.forEach(c => {
@@ -809,6 +804,7 @@ renderPlate(); updateSummary();
 </body>
 
 </html>
+
 
 
 
