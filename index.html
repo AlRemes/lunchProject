@@ -6,13 +6,12 @@
 <style>
   body{font-family:Arial;margin:18px}
   #top{display:flex;gap:20px;align-items:flex-start}
-  #palette{width:300px;border:1px solid #ddd;padding:10px;border-radius:6px}
-  .food{display:flex;align-items:center;gap:8px;padding:6px;border-radius:6px;margin-bottom:8px;background:#fafafa;cursor:grab}
-  .food img{width:48px;height:48px;object-fit:cover;border-radius:6px}
-  #platecard{width:700px;height:420px;border:1px solid #ddd;border-radius:8px;position:relative;background:linear-gradient(#fff,#f6f6f6);padding:20px;box-sizing:border-box;overflow:visible}
-  #plateWrapper{position:relative;width:420px;height:420px}
-  #plate{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:360px;height:360px;border-radius:50%;background:#fff6e6;border:8px solid #eee;box-shadow:0 2px 4px rgba(0,0,0,0.06);overflow:visible;display:block}
-  .placed{position:absolute;transform:translate(-50%,-50%);pointer-events:auto;border-radius:6px}
+  #palette{width:360px;border:1px solid #ddd;padding:14px;border-radius:8px}
+  .food{display:flex;align-items:center;gap:12px;padding:10px;border-radius:8px;margin-bottom:10px;background:#fafafa;cursor:grab;font-size:15px}
+  .food img{width:64px;height:64px;object-fit:cover;border-radius:8px}
+  #platecard{width:820px;height:520px;border:1px solid #ddd;border-radius:8px;position:relative;background:linear-gradient(#fff,#f6f6f6);padding:22px;box-sizing:border-box;overflow:visible}
+  #plateWrapper{position:relative;width:520px;height:520px}
+  #plate{width:480px;height:480px;border-radius:50%}  .placed{position:absolute;transform:translate(-50%,-50%);pointer-events:auto;border-radius:6px}
   #controls{margin-top:12px}
   button{padding:8px 12px;border-radius:6px;border:1px solid #bbb;background:#fff;cursor:pointer}
   #summary{margin-top:10px}
@@ -52,6 +51,8 @@
   </div>
 
 <script>
+window.addEventListener('DOMContentLoaded', () => {
+
 //  CONFIG   
 const WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbxEpMGjGgkn8a7_RG0-fSyPj-IZny88ZChcqtQ_ks1ALOv0bxrKYTmLy8pSjx0A5euX5A/exec';
 
@@ -70,19 +71,19 @@ const FOOD_CATALOG = [
   {id:'milk', label:'Milk (carton)', kcal:150, img:'images/milk-carton.svg', placement:'side'}
 ];
 
-const PLATE_DIAMETER = 360;
+const PLATE_DIAMETER = 480;
 const SIZE_MAP = {
-  potato: 78,
-  sausage: Math.round(78 * 1.25),
-  carrot: 34,
-  bread: 56,
-  bread_butter: 56,
-  bread_butter_cheese: 56,
-  cheese: 42,
-  butter: 28,
-  apple: 68,
-  water: 50,
-  milk: 50
+  potato: 100,
+  sausage: 125,
+  carrot: 44,
+  bread: 72,
+  bread_butter: 72,
+  bread_butter_cheese: 72,
+  cheese: 54,
+  butter: 36,
+  apple: 86,
+  water: 62,
+  milk: 62
 };
 const SIDE_SLOT_GAP_PX = 38;
 const OVERLAP_FACTOR = 0.88;
@@ -108,6 +109,10 @@ function collidesWithOnPlate(candidate) {
 
 //  UI BUILD   
 const foodsDiv = document.getElementById('foods');
+if (!foodsDiv) {
+  console.error('foodsDiv element not found. Did DOMContentLoaded run?');
+}
+console.log('FOOD_CATALOG items count:', FOOD_CATALOG.length);
 foodsDiv.innerHTML = '';
 
 function makeFoodTile(item) {
@@ -200,6 +205,11 @@ FOOD_CATALOG.forEach(item => {
 
   foodsDiv.appendChild(tile);
 });
+
+if (!foodsDiv.childElementCount) {
+  foodsDiv.innerHTML = '<div style="padding:12px;color:#666">No food options available. Check console for errors.</div>';
+  console.warn('No food tiles rendered. Check for JS errors or missing images.');
+}
 
 //  SIDE SLOTS   
 function computeSideSlots() {
@@ -764,8 +774,10 @@ plateCard.addEventListener('drop', (e) => {
 
 // initial
 renderPlate(); updateSummary();
+});
 </script>
 </body>
 
 </html>
+
 
