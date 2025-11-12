@@ -327,7 +327,11 @@ function updateSummary() {
   if (!controls) return;
 
   // Save session row
-  <button id="openComparisons">Open comparisons</button>
+  const openBtn = document.createElement('button');
+  openBtn.id = 'openComparisons';
+  openBtn.textContent = 'Open comparisons';
+  openBtn.style.marginBottom = '10px';
+  controls.insertBefore(openBtn, controls.firstChild);
 
   // Comparison panel
   const compPanel = document.createElement('div');
@@ -779,5 +783,6 @@ renderPlate(); updateSummary();
 </body>
 
 </html>
+
 
 
