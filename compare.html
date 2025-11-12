@@ -1,0 +1,255 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<title>Compare Plate</title>
+<style>
+  body{font-family:Arial;margin:14px;background:#f6f6f7}
+  .topbar{display:flex;gap:12px;align-items:center}
+  .btn{padding:8px 12px;border-radius:6px;border:1px solid #bbb;background:#fff;cursor:pointer}
+  #stage{position:relative;width:760px;height:520px;margin:18px auto;border-radius:8px;background:#fff;padding:16px;box-shadow:0 6px 22px rgba(0,0,0,0.08)}
+  #plateWrapper{position:relative;width:420px;height:420px;margin:0 auto}
+  #plateCanvas{position:relative;width:420px;height:420px;border-radius:50%;background:#fff6e6;border:8px solid #eee;overflow:visible}
+  .baseItem{position:absolute;transform:translate(-50%,-50%);opacity:0.55;filter:grayscale(1)}
+  .overlayItem{position:absolute;transform:translate(-50%,-50%) scale(1);transition:transform 700ms cubic-bezier(.2,.9,.2,1), opacity 500ms ease;opacity:1}
+  #caption{margin-top:12px;text-align:center;font-size:14px}
+  #controls{width:760px;margin:10px auto;text-align:center}
+  select{padding:6px}
+</style>
+</head>
+<body>
+  <div class="topbar" style="justify-content:center">
+    <button id="backBtn" class="btn">Back</button>
+    <button id="cmpRecommendedBtn" class="btn">Compare to Recommended</button>
+    <button id="cmpRealityBtn" class="btn">Compare to Reality (pick)</button>
+    <select id="pastSelect" class="btn"></select>
+    <button id="playAll" class="btn">Play sequence</button>
+  </div>
+
+  <div id="stage">
+    <div id="plateWrapper">
+      <div id="plateCanvas"></div>
+    </div>
+    <div id="caption"></div>
+  </div>
+
+<script>
+const WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbxEpMGjGgkn8a7_RG0-fSyPj-IZny88ZChcqtQ_ks1ALOv0bxrKYTmLy8pSjx0A5euX5A/exec'; // use your URL
+const PLATE_DIAMETER = 420; // canvas size here
+
+function qs(name) { const u = new URL(location.href); return u.searchParams.get(name); }
+
+let basePayload = null; // will hold session payload including positions
+let overlayElements = []; // DOM elements for overlay items
+
+async function fetchSession(sessionId) {
+  const res = await fetch(WEB_APP_URL + '?mode=session&sessionId=' + encodeURIComponent(sessionId));
+  if (!res.ok) throw new Error('session fetch failed');
+  const json = await res.json();
+  return json && json.payload ? json.payload : null;
+}
+async function fetchRecommended() {
+  const res = await fetch(WEB_APP_URL + '?mode=summary');
+  if (!res.ok) throw new Error('summary fetch failed');
+  return await res.json();
+}
+async function fetchPastList() {
+  const res = await fetch(WEB_APP_URL + '?mode=sessions');
+  if (!res.ok) throw new Error('sessions fetch failed');
+  return await res.json();
+}
+
+// load initial session: from URL sessionId or fallback sessionStorage
+async function loadBase() {
+  const sid = qs('sessionId');
+  if (sid) {
+    basePayload = await fetchSession(sid);
+  } else {
+    const fallback = sessionStorage.getItem('plate_positions_fallback');
+    if (fallback) basePayload = JSON.parse(fallback);
+  }
+  if (!basePayload) {
+    alert('No session found. Return to build page and save a session.');
+    return;
+  }
+  renderBasePlate(basePayload);
+  populatePastSelect();
+}
+
+// render the anchored base plate exactly using positions in basePayload.positions
+function renderBasePlate(payload) {
+  const canvas = document.getElementById('plateCanvas');
+  canvas.innerHTML = '';
+  // background base: draw each saved position as a faded baseItem
+  const positions = payload.positions || [];
+  positions.forEach(p => {
+    const img = document.createElement('img');
+    img.src = (p.id && ('images/' + p.id + '.svg')) || '';
+    img.className = 'baseItem';
+    img.style.left = p.x + 'px';
+    img.style.top = p.y + 'px';
+    img.style.width = (p.sizePx || 48) + 'px';
+    img.style.height = (p.sizePx || 48) + 'px';
+    img.style.transform = `translate(-50%,-50%) rotate(${p.rotationDeg||0}deg)`;
+    canvas.appendChild(img);
+  });
+  // remember anchor positions for overlay math
+  basePayload._anchorMap = {};
+  positions.forEach(p => {
+    basePayload._anchorMap[p.id] = basePayload._anchorMap[p.id] || [];
+    basePayload._anchorMap[p.id].push(p);
+  });
+}
+
+// create overlay items (one DOM element per anchor position) and return array
+function createOverlayElements() {
+  const canvas = document.getElementById('plateCanvas');
+  // remove previous overlay elements
+  document.querySelectorAll('.overlayItem').forEach(n=>n.remove());
+  overlayElements = [];
+  const positions = basePayload.positions || [];
+  positions.forEach(p => {
+    const img = document.createElement('img');
+    img.src = (p.id && ('images/' + p.id + '.svg')) || '';
+    img.className = 'overlayItem';
+    img.style.left = p.x + 'px';
+    img.style.top = p.y + 'px';
+    img.style.width = (p.sizePx || 48) + 'px';
+    img.style.height = (p.sizePx || 48) + 'px';
+    img.style.transform = `translate(-50%,-50%) scale(1) rotate(${p.rotationDeg||0}deg)`;
+    img.style.opacity = '0';
+    canvas.appendChild(img);
+    overlayElements.push({ el: img, id: p.id, anchor: p });
+  });
+  return overlayElements;
+}
+
+// animate overlay to represent targetCounts (object id->count). Items are anchored, they DO NOT move.
+// scaling: find anchorCount per id (how many anchors exist for that id), then compute target total instances for id,
+// compute per-anchor scale = sqrt(targetInstances / anchorCount) or 0 if target is 0.
+function animateComparison(targetCounts, title) {
+  const caption = document.getElementById('caption');
+  caption.textContent = title || '';
+  const anchorsById = {};
+  basePayload.positions.forEach(p => (anchorsById[p.id] = anchorsById[p.id] || []).push(p));
+  const overlay = createOverlayElements();
+  // set initial opacity and scale to 0.001 so they pop in at correct anchor
+  overlay.forEach(o => { o.el.style.opacity = '1'; o.el.style.transform = `translate(-50%,-50%) scale(0.001) rotate(${o.anchor.rotationDeg||0}deg)`; });
+
+  // compute target instances count per id (rounding rules: use provided count or fallback to Math.round(avg))
+  // targetCounts is an object id->count (numbers)
+  const anchorCountById = {};
+  Object.keys(anchorsById).forEach(id=> anchorCountById[id] = anchorsById[id].length);
+
+  // For each overlay element, compute scale
+  overlay.forEach(o => {
+    const id = o.id;
+    const anchorCount = anchorCountById[id] || 1;
+    const targetInstances = Math.max(0, targetCounts[id] || 0);
+    // ratio area-based -> sqrt
+    const ratio = anchorCount === 0 ? (targetInstances > 0 ? targetInstances : 0) : (targetInstances / anchorCount);
+    let scale = Math.sqrt(Math.max(0.0001, ratio));
+    // clamp for visual sanity
+    scale = Math.max(0.25, Math.min(2.6, scale));
+    // apply transform after tiny delay to ensure transition
+    setTimeout(()=> {
+      o.el.style.transform = `translate(-50%,-50%) scale(${scale}) rotate(${o.anchor.rotationDeg||0}deg)`;
+      o.el.style.opacity = '1';
+    }, 40);
+  });
+
+  // show summary text under plate
+  setTimeout(()=> {
+    // compute diffs
+    const diffs = [];
+    const allIds = new Set([...Object.keys(anchorCountById), ...Object.keys(targetCounts)]);
+    allIds.forEach(id=>{
+      const a = anchorCountById[id] || 0;
+      const t = targetCounts[id] || 0;
+      if (a === t) return;
+      const pct = a === 0 ? 100 : Math.round(((t - a) / a) * 100);
+      diffs.push({ id, a, t, pct });
+    });
+    diffs.sort((x,y)=> Math.abs(y.pct) - Math.abs(x.pct));
+    const top = diffs.slice(0,5).map(d => `${d.id}: ${d.a}→${d.t} (${d.pct>0?'+':''}${d.pct}%)`);
+    caption.textContent = (title ? title + ' — ' : '') + (top.length ? top.join('; ') : 'No changes');
+  }, 900);
+
+}
+
+// helpers to convert recommended/session payloads into id->count maps
+function itemsArrayToCounts(items) {
+  const map = {};
+  (items||[]).forEach(it => { map[it.id] = (map[it.id]||0) + (it.count||1); });
+  return map;
+}
+
+// UI wiring
+document.getElementById('backBtn').addEventListener('click', ()=> { window.location.href = 'index.html'; });
+
+document.getElementById('cmpRecommendedBtn').addEventListener('click', async ()=> {
+  try {
+    const summary = await fetchRecommended();
+    // build counts map using avgPerSubmission or totalCount (rounded)
+    const counts = {};
+    (summary.items||[]).forEach(it => {
+      const c = Math.max(0, Math.round(it.avgPerSubmission || it.totalCount || 0));
+      counts[it.id] = c;
+    });
+    animateComparison(counts, 'Recommended vs Estimate');
+  } catch (err) {
+    console.error(err); alert('Failed to fetch recommended');
+  }
+});
+
+document.getElementById('pastSelect').addEventListener('change', ()=>{/* nothing: wait for manual compare */});
+
+document.getElementById('cmpRealityBtn').addEventListener('click', async ()=> {
+  const sel = document.getElementById('pastSelect');
+  if (!sel || !sel.value) { alert('Pick a session from the selector'); return; }
+  try {
+    const payload = await fetchSession(sel.value);
+    if (!payload) { alert('No payload returned'); return; }
+    const counts = itemsArrayToCounts(payload.items || []);
+    animateComparison(counts, 'Reality vs Estimate');
+  } catch (err) {
+    console.error(err); alert('Failed to fetch session');
+  }
+});
+
+// Play sequence button: recommended -> reality (selected) -> previous selected (if any)
+document.getElementById('playAll').addEventListener('click', async ()=> {
+  // recommended
+  document.getElementById('cmpRecommendedBtn').click();
+  await new Promise(r=>setTimeout(r, 2400));
+  // reality (selected)
+  const sel = document.getElementById('pastSelect');
+  if (sel && sel.value) {
+    document.getElementById('cmpRealityBtn').click();
+    await new Promise(r=>setTimeout(r, 2400));
+  }
+});
+
+// populate past select
+async function populatePastSelect() {
+  try {
+    const res = await fetch(WEB_APP_URL + '?mode=sessions');
+    if (!res.ok) throw new Error('sessions fetch failed');
+    const json = await res.json();
+    const sel = document.getElementById('pastSelect');
+    sel.innerHTML = '';
+    (json.sessions||[]).forEach(s=>{
+      const opt = document.createElement('option');
+      opt.value = s.sessionId;
+      opt.textContent = `${s.label || s.sessionId} — ${s.timestamp || ''}`;
+      sel.appendChild(opt);
+    });
+  } catch (err) {
+    console.warn('populatePastSelect', err);
+  }
+}
+
+loadBase();
+</script>
+</body>
+</html>
