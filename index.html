@@ -53,7 +53,7 @@
 
 <script>
 //  CONFIG   
-const WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbyJr4MdhznczZ4AzAF7sBNn_pzyq6ZifR5TXMSgs3SGZiJ0_zTyJxESr5cMjSuDp4qXuA/exec';
+const WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbx1Bw8z_LySumyGjFbG7W0jnKZ7PLXlNqxF9Fj8uESUnEAd3QCbonckUuD0ElEENQxzCA/exec';
 
 //  CATALOG & LAYOUT  
 const FOOD_CATALOG = [
@@ -309,6 +309,294 @@ function updateSummary() {
   sumDiv.innerHTML = html;
 }
 
+  // ---------------------- Part B: Session save + Comparison UI ----------------------
+
+// Add Save Session and Comparison UI elements dynamically for convenience
+(function addComparisonControls() {
+  const controls = document.getElementById('controls');
+  if (!controls) return;
+
+  // Save session row
+  const saveRow = document.createElement('div');
+  saveRow.style.marginTop = '10px';
+  saveRow.innerHTML = `
+    <input id="sessionLabel" placeholder="Session label (e.g., Estimate A)" style="margin-right:8px">
+    <button id="saveSessionBtn">Save session</button>
+    <span id="saveSessionStatus" style="margin-left:10px;color:#333"></span>
+  `;
+  controls.insertBefore(saveRow, controls.firstChild);
+
+  // Comparison panel
+  const compPanel = document.createElement('div');
+  compPanel.style.marginTop = '10px';
+  compPanel.innerHTML = `
+    <strong>Comparisons</strong>
+    <div style="margin-top:6px">
+      <button id="cmpRecommended">Compare to Recommended</button>
+      <button id="cmpPast">Compare to Past Session</button>
+      <select id="pastSessionsSelect" style="margin-left:6px"></select>
+    </div>
+    <div style="margin-top:8px">
+      <button id="cmpReality" title="Compare to a specific reality session (pick from Past sessions)">Compare to Reality</button>
+    </div>
+  `;
+  controls.appendChild(compPanel);
+
+  // Pre-fill past sessions select
+  refreshPastSessionsList();
+})();
+
+// Helper: send payload via form-encoded POST
+async function postPayload(payloadObj) {
+  const form = new URLSearchParams();
+  form.append('payload', JSON.stringify(payloadObj));
+  const res = await fetch(WEB_APP_URL, { method: 'POST', body: form });
+  if (!res.ok) throw new Error('Server returned ' + res.status);
+  const json = await res.json().catch(()=>null);
+  return json;
+}
+
+// Save session handler
+document.addEventListener('click', (ev) => {
+  if (!ev.target) return;
+  if (ev.target.id === 'saveSessionBtn') {
+    const label = document.getElementById('sessionLabel').value.trim() || ('Session ' + new Date().toLocaleString());
+    if (state.placedInstances.length === 0) { alert('Nothing on plate to save'); return; }
+    const payload = {
+      name: 'presenter',
+      timestamp: new Date().toISOString(),
+      sessionLabel: label,
+      items: state.placedInstances.map(it => ({ id: it.id, label: it.label, count: 1, kcal: it.kcal || 0 })),
+      // include positions so sessions can be replayed exactly: positions per placed instance
+      positions: state.placedInstances.map(it => ({ id: it.id, x: it.x, y: it.y, sizePx: it.sizePx, rotationDeg: it.rotationDeg, placement: it.placement, sideSlot: it.sideSlot }))
+    };
+    const statusEl = document.getElementById('saveSessionStatus');
+    statusEl.textContent = 'Saving...';
+    postPayload(payload).then(resp => {
+      if (resp && resp.status === 'ok') {
+        statusEl.textContent = 'Saved';
+      } else if (resp && resp.sessionId) {
+        statusEl.textContent = 'Saved (id:' + resp.sessionId + ')';
+      } else {
+        statusEl.textContent = 'Saved';
+      }
+      setTimeout(()=>{ statusEl.textContent = ''; refreshPastSessionsList(); }, 1200);
+    }).catch(err => {
+      console.error('Save session failed', err);
+      statusEl.textContent = 'Error saving';
+      setTimeout(()=>{ statusEl.textContent = ''; }, 2000);
+    });
+  }
+});
+
+// Fetch past sessions list and populate select
+async function refreshPastSessionsList() {
+  try {
+    const url = WEB_APP_URL + '?mode=sessions';
+    const res = await fetch(url);
+    if (!res.ok) { console.warn('sessions fetch failed', res.status); return; }
+    const json = await res.json().catch(()=>null);
+    const sel = document.getElementById('pastSessionsSelect');
+    if (!sel) return;
+    sel.innerHTML = '';
+    if (json && json.sessions && json.sessions.length) {
+      json.sessions.forEach(s => {
+        const opt = document.createElement('option');
+        opt.value = s.sessionId;
+        opt.textContent = `${s.label || s.sessionId} — ${s.timestamp || ''} (${s.kcalTotal || 0} kcal)`;
+        sel.appendChild(opt);
+      });
+    } else {
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = 'No sessions saved';
+      sel.appendChild(opt);
+    }
+  } catch (err) {
+    console.error('refreshPastSessionsList error', err);
+  }
+}
+
+// Comparison flow: fetch target (recommended or session) and animate
+async function compareToTarget(targetPayload, options = {}) {
+  // options: { title: 'Recommended', anchorPositions: state.placedInstances positions if available, animateDurationMs: 800 }
+  const animateMs = options.animateDurationMs || 800;
+  const anchorPositions = (options.anchorPositions && options.anchorPositions.length) ? options.anchorPositions : state.placedInstances;
+  if (!anchorPositions || anchorPositions.length === 0) { alert('No base plate (Estimate) saved to anchor comparisons. Build plate first.'); return; }
+
+  // Build maps of counts for anchor (estimate) and target
+  const anchorCounts = {}; // id -> count in anchor
+  anchorPositions.forEach(it => { anchorCounts[it.id] = (anchorCounts[it.id] || 0) + 1; });
+
+  const targetCounts = {}; // id -> count
+  if (targetPayload.items && Array.isArray(targetPayload.items)) {
+    targetPayload.items.forEach(it => { targetCounts[it.id] = (targetCounts[it.id] || 0) + (it.count || 1); });
+  } else if (targetPayload.itemsMap) {
+    Object.assign(targetCounts, targetPayload.itemsMap);
+  }
+
+  // build overlay container
+  const plateCardRect = plateCard.getBoundingClientRect();
+  const overlay = document.createElement('div');
+  overlay.style.position = 'absolute';
+  overlay.style.left = plateCardRect.left + 'px';
+  overlay.style.top = plateCardRect.top + 'px';
+  overlay.style.width = plateCardRect.width + 'px';
+  overlay.style.height = plateCardRect.height + 'px';
+  overlay.style.pointerEvents = 'none';
+  overlay.style.zIndex = 2000;
+  document.body.appendChild(overlay);
+
+  // gray out underlying plate visually
+  plateCard.style.transition = 'filter 300ms ease, opacity 300ms ease';
+  plateCard.style.filter = 'grayscale(1)';
+  plateCard.style.opacity = '0.45';
+
+  // For each anchor position, create an overlay image and compute its target scale
+  const maxScale = 2.4;
+  const minScale = 0.3;
+  const created = [];
+  anchorPositions.forEach((anchor, i) => {
+    // find anchor count and compute target count for this id
+    const id = anchor.id;
+    const anchorCount = anchorCounts[id] || 1;
+    const tgtCount = Math.max(0, targetCounts[id] || 0);
+    // scale by ratio of counts; area-based scale -> use sqrt of ratio
+    const ratio = (anchorCount === 0) ? (tgtCount > 0 ? (tgtCount) : 0) : (tgtCount / anchorCount);
+    let scale = Math.sqrt(Math.max(0.0001, ratio));
+    if (!isFinite(scale) || scale <= 0) scale = 0.01;
+    scale = Math.min(maxScale, Math.max(minScale, scale));
+
+    // position overlayed image at the same absolute position
+    const img = document.createElement('img');
+    const catalogItem = catalogFind(id) || {};
+    img.src = catalogItem.img || ('images/' + id + '.svg');
+    img.style.position = 'absolute';
+    // absolute coords relative to document:
+    const plateRect = plateCard.getBoundingClientRect();
+    const absX = plateRect.left + anchor.x;
+    const absY = plateRect.top + anchor.y;
+    img.style.left = absX + 'px';
+    img.style.top = absY + 'px';
+    img.style.width = (anchor.sizePx || 40) + 'px';
+    img.style.height = (anchor.sizePx || 40) + 'px';
+    img.style.transform = 'translate(-50%,-50%) scale(0.001)';
+    img.style.transition = `transform ${animateMs}ms cubic-bezier(.2,.9,.2,1), opacity ${animateMs}ms ease`;
+    img.style.opacity = '0.0';
+    img.style.pointerEvents = 'none';
+    overlay.appendChild(img);
+    created.push({ img, scale, id, anchor });
+  });
+
+  // Force reflow then animate
+  requestAnimationFrame(() => {
+    created.forEach(c => {
+      c.img.style.opacity = '1';
+      c.img.style.transform = `translate(-50%,-50%) scale(${c.scale})`;
+    });
+  });
+
+  // After animation, show small textual summary
+  setTimeout(() => {
+    // compute a short diff summary: top changed items
+    const diffs = [];
+    const allIds = new Set([...Object.keys(anchorCounts), ...Object.keys(targetCounts)]);
+    allIds.forEach(id => {
+      const a = anchorCounts[id] || 0;
+      const t = targetCounts[id] || 0;
+      if (a === t) return;
+      const pct = a === 0 ? 100 : Math.round(((t - a) / a) * 100);
+      diffs.push({ id, a, t, pct });
+    });
+    diffs.sort((x,y) => Math.abs(y.pct) - Math.abs(x.pct));
+    const top = diffs.slice(0,5).map(d => `${d.id}: ${d.a}→${d.t} (${d.pct>0?'+':''}${d.pct}%)`);
+    // show overlay caption
+    const caption = document.createElement('div');
+    caption.style.position = 'fixed';
+    caption.style.left = '50%';
+    caption.style.bottom = '20px';
+    caption.style.transform = 'translateX(-50%)';
+    caption.style.background = 'rgba(0,0,0,0.75)';
+    caption.style.color = '#fff';
+    caption.style.padding = '8px 12px';
+    caption.style.borderRadius = '6px';
+    caption.style.zIndex = 2010;
+    caption.style.fontSize = '13px';
+    caption.textContent = (options.title ? options.title + ': ' : '') + (top.length ? top.join('; ') : 'No changes');
+    document.body.appendChild(caption);
+
+    // cleanup after a delay
+    setTimeout(() => {
+      document.body.removeChild(caption);
+      document.body.removeChild(overlay);
+      plateCard.style.filter = '';
+      plateCard.style.opacity = '';
+      // also refresh sessions list in case we saved during this presentation
+      refreshPastSessionsList();
+      if (options.onComplete) options.onComplete();
+    }, 2400);
+  }, animateMs + 80);
+}
+
+// Wire comparison buttons
+document.getElementById('cmpRecommended').addEventListener('click', async () => {
+  try {
+    const url = WEB_APP_URL + '?mode=summary';
+    const res = await fetch(url);
+    if (!res.ok) { alert('Failed to fetch recommended'); return; }
+    const json = await res.json();
+    // convert recommended items to standard payload shape: items: [{id,label,count,kcal}]
+    const items = (json.items || []).map(it => ({ id: it.id, label: it.label, count: Math.round(it.avgPerSubmission || it.totalCount || 0), kcal: it.totalKcal ? Math.round(it.totalKcal / Math.max(1, it.totalCount)) : 0 }));
+    const targetPayload = { items };
+    compareToTarget(targetPayload, { title: 'Recommended vs Estimate', anchorPositions: state.placedInstances });
+  } catch (err) {
+    console.error(err);
+    alert('Error fetching recommended data. Check console.');
+  }
+});
+
+document.getElementById('cmpPast').addEventListener('click', async () => {
+  const sel = document.getElementById('pastSessionsSelect');
+  if (!sel || !sel.value) { alert('No saved session selected'); return; }
+  const sessionId = sel.value;
+  try {
+    const url = WEB_APP_URL + '?mode=session&sessionId=' + encodeURIComponent(sessionId);
+    const res = await fetch(url);
+    if (!res.ok) { alert('Failed to fetch session'); return; }
+    const json = await res.json();
+    if (json && json.payload) {
+      const payload = json.payload;
+      compareToTarget(payload, { title: 'Past session vs Estimate', anchorPositions: state.placedInstances });
+    } else {
+      alert('Session payload missing');
+    }
+  } catch (err) {
+    console.error(err);
+    alert('Error fetching session. Check console.');
+  }
+});
+
+// For "Reality" allow selecting from past sessions as well; reuse cmpPast or you can implement a special mapping
+document.getElementById('cmpReality').addEventListener('click', async () => {
+  // for now reuse selected past session as reality; you may adapt to load a predefined reality session id
+  const sel = document.getElementById('pastSessionsSelect');
+  if (!sel || !sel.value) { alert('No saved session selected to use as Reality'); return; }
+  const sessionId = sel.value;
+  try {
+    const url = WEB_APP_URL + '?mode=session&sessionId=' + encodeURIComponent(sessionId);
+    const res = await fetch(url);
+    const json = await res.json();
+    if (json && json.payload) {
+      compareToTarget(json.payload, { title: 'Reality vs Estimate', anchorPositions: state.placedInstances });
+    } else {
+      alert('Session payload missing');
+    }
+  } catch (err) {
+    console.error(err);
+    alert('Error fetching reality session');
+  }
+});
+
 document.getElementById('clear').addEventListener('click', ()=>{ state.placedInstances = []; renderPlate(); updateSummary(); });
 
 // Submit: send form-encoded payload ( alerts for success/failure)
@@ -445,4 +733,5 @@ plateCard.addEventListener('drop', (e) => {
 renderPlate(); updateSummary();
 </script>
 </body>
+
 </html>
