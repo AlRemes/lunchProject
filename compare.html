@@ -10,7 +10,7 @@
   #stage{position:relative;width:760px;height:520px;margin:18px auto;border-radius:8px;background:#fff;padding:16px;box-shadow:0 6px 22px rgba(0,0,0,0.08)}
   #plateWrapper{position:relative;width:420px;height:420px;margin:0 auto}
   #plateCanvas{position:relative;width:420px;height:420px;border-radius:50%;background:#fff6e6;border:8px solid #eee;overflow:visible}
-  .baseItem{position:absolute;transform:translate(-50%,-50%);opacity:0.55;filter:grayscale(1)}
+  .baseItem{position:absolute;transform:translate(-50%,-50%);opacity:1;filter:none;transition:filter 300ms ease, opacity 300ms ease}
   .overlayItem{position:absolute;transform:translate(-50%,-50%) scale(1);transition:transform 700ms cubic-bezier(.2,.9,.2,1), opacity 500ms ease;opacity:1}
   #caption{margin-top:12px;text-align:center;font-size:14px}
   #controls{width:760px;margin:10px auto;text-align:center}
@@ -151,6 +151,11 @@ function animateComparison(targetCounts, title) {
     let scale = Math.sqrt(Math.max(0.0001, ratio));
     // clamp for visual sanity
     scale = Math.max(0.25, Math.min(2.6, scale));
+    // gray the base template now so comparison overlay stands out
+    document.querySelectorAll('.baseItem').forEach(el => {
+      el.style.filter = 'grayscale(1)';
+      el.style.opacity = '0.45';
+    });
     // apply transform after tiny delay to ensure transition
     setTimeout(()=> {
       o.el.style.transform = `translate(-50%,-50%) scale(${scale}) rotate(${o.anchor.rotationDeg||0}deg)`;
