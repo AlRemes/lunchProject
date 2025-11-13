@@ -28,15 +28,13 @@
     overflow:visible;
     display:block;
   }
-  /* ensure wrapper and badge layout is stable and badge is small and bottom-right */
   .placed-wrapper { transform-origin:50% 50%; pointer-events:auto; position:absolute; }
   .placed-wrapper img { display:block; width:100%; height:100%; object-fit:contain; pointer-events:none; }
-  .fraction-badge { position:absolute; right:6px; bottom:6px; background:rgba(0,0,0,0.65); color:#fff; font-size:11px; padding:2px 6px; border-radius:9px; pointer-events:none; box-shadow:0 1px 3px rgba(0,0,0,0.25); font-weight:600; z-index:5; }
-  /* hide any textual title hovering artifact inside images */
-  .placed-wrapper img[title] { title: none; }
-  /* class applied for clipped-half images to create diagonal half-mask */
-  /* clipped half: show top-left-to-bottom-right diagonal half (keep visible top-left triangle) */
+  .side-placed-wrapper { position:absolute; }
+  /* clipped half: top-left to bottom-right diagonal */
   .clip-half { -webkit-clip-path: polygon(0 0, 100% 100%, 0 100%); clip-path: polygon(0 0, 100% 100%, 0 100%); }
+  /* fraction badge exists but we keep it hidden on plate (available if you want to enable) */
+  .fraction-badge { display:none; position:absolute; right:4px; bottom:4px; background:rgba(0,0,0,0.65); color:#fff; font-size:11px; padding:2px 6px; border-radius:9px; pointer-events:none; box-shadow:0 1px 3px rgba(0,0,0,0.25); font-weight:600; z-index:5; }
   #controls{margin-top:12px}
   button{padding:8px 12px;border-radius:6px;border:1px solid #bbb;background:#fff;cursor:pointer}
   #summary{margin-top:10px}
@@ -74,17 +72,10 @@
   </div>
 
 <script>
-/* Single-file index.html with:
-   - fraction handling (1, 1/2, 1/4)
-   - wrapper-based rendering (no stray rectangles)
-   - water/milk have only full portions
-   - a "Compare page" button that saves positions to sessionStorage and navigates to compare.html
-*/
-
 window.addEventListener('DOMContentLoaded', () => {
 
 // CONFIG
-const WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbxEpMGjGgkn8a7_RG0-fSyPj-IZny88ZChcqtQ_ks1ALOv0bxrKYTmLy8pSjx0A5euX5A/exec'; 
+const WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbxEpMGjGgkn8a7_RG0-fSyPj-IZny88ZChcqtQ_ks1ALOv0bxrKYTmLy8pSjx0A5euX5A/exec';
 const PLATE_DIAMETER = 480;
 const SIZE_MAP = {
   potato: 100,
@@ -96,16 +87,14 @@ const SIZE_MAP = {
   milk: 62
 };
 
-const state = { placedInstances: [] }; // stores grams-aware placed entries
+const state = { placedInstances: [] }; // grams-aware placed entries
 
-// CATALOG with gramsPerPortion and additional bread variants
+// CATALOG — no separate bread_butter or bread_butter_cheese entries
 const FOOD_CATALOG = [
   {id:'potato', label:'Potato', kcal:160, gramsPerPortion:150, img:'images/potato.svg', placement:'onplate'},
   {id:'sausage', label:'Sausage', kcal:250, gramsPerPortion:75, img:'images/sausage.svg', placement:'onplate'},
   {id:'carrot', label:'Carrot', kcal:25, gramsPerPortion:75, img:'images/carrot.svg', placement:'onplate'},
   {id:'bread', label:'Bread slice', kcal:80, gramsPerPortion:40, img:'images/slice-of-bread.svg', placement:'side', hasOptions:true},
-  {id:'bread_butter', label:'Bread with butter', kcal:80 + 102, gramsPerPortion:40, img:'images/bread-with-butter.svg', placement:'side', hidden:true},
-  {id:'bread_butter_cheese', label:'Bread with butter and cheese', kcal:80 + 102 + 110, gramsPerPortion:40, img:'images/cheese-bread.svg', placement:'side', hidden:true},
   {id:'apple', label:'Apple', kcal:95, gramsPerPortion:150, img:'images/apple.svg', placement:'side'},
   {id:'water', label:'Water (glass)', kcal:0, gramsPerPortion:200, img:'images/glass-of-water.svg', placement:'side'},
   {id:'milk', label:'Milk (carton)', kcal:150, gramsPerPortion:250, img:'images/milk-carton.svg', placement:'side'}
@@ -138,10 +127,9 @@ function makeFoodTile(item) {
   el.dataset.id = item.id;
   el.innerHTML = `<img src="${item.img}" alt="${item.label}"><div><strong>${item.label}</strong><div class="small">${item.kcal} kcal/portion</div></div>`;
 
-  // determine which items allow fractional portions
+  // fractional not allowed for water, milk, bread
   const fractionalAllowed = !(item.id === 'water' || item.id === 'milk' || item.id === 'bread');
 
-  // portion controls
   const pc = document.createElement('div'); pc.className = 'portion-controls';
   const btn1 = document.createElement('button'); btn1.textContent = '1'; btn1.title='Add full portion';
   pc.appendChild(btn1);
@@ -168,48 +156,54 @@ function makeFoodTile(item) {
     const btnAddButter = opts.querySelector('button[data-action="addButter"]');
     const btnAddCheese = opts.querySelector('button[data-action="addCheese"]');
 
-    // add butter: if a plain bread side instance exists, upgrade it to bread_butter preserving slot; otherwise add a new bread_butter
-    btnAddButter.addEventListener('click', (ev) => {
-      ev.stopPropagation();
-      const idxPlain = state.placedInstances.findIndex(p => p.id === 'bread' && p.placement === 'side');
-      if(idxPlain >= 0) {
-        const prev = state.placedInstances[idxPlain];
+    function upsertBreadVariant(optsLocal = {}) {
+      const breadMeta = FOOD_CATALOG.find(c=>c.id==='bread');
+      // find any existing side bread or bread_variant
+      const sideIndex = state.placedInstances.findIndex(p => (p.placement === 'side') && (p.id === 'bread' || p.id === 'bread_variant'));
+      const kcalBase = breadMeta ? breadMeta.kcal : 80;
+      const gramsBase = breadMeta ? breadMeta.gramsPerPortion : 40;
+      if (sideIndex >= 0) {
+        const prev = state.placedInstances[sideIndex];
         const slot = prev.sideSlot;
-        state.placedInstances.splice(idxPlain, 1, {
-          id: 'bread_butter',
-          label: catalogFind('bread_butter').label,
-          kcalPerPortion: catalogFind('bread_butter').kcal,
-          gramsPerPortion: catalogFind('bread_butter').gramsPerPortion || prev.gramsPerPortion || 40,
-          grams: prev.grams,
+        state.placedInstances.splice(sideIndex, 1, {
+          id: 'bread_variant',
+          label: optsLocal.label,
+          kcalPerPortion: kcalBase + (optsLocal.kcalAdd || 0),
+          gramsPerPortion: gramsBase,
+          grams: prev.grams || gramsBase,
           x: prev.x, y: prev.y,
-          sizePx: SIZE_MAP['bread_butter'] || prev.sizePx,
-          rotationDeg: 0, placement: 'side', sideSlot: slot, fraction: prev.fraction || 1
+          sizePx: SIZE_MAP['bread'] || 72,
+          rotationDeg: 0, placement: 'side', sideSlot: slot, fraction: prev.fraction || 1,
+          _imgOverride: optsLocal.img
         });
       } else {
-        addInstanceToPlate('bread_butter', 1);
-      }
-      renderPlate(); updateSummary();
-    });
-
-    // add cheese: upgrade bread_butter -> bread_butter_cheese
-    btnAddCheese.addEventListener('click', (ev) => {
-      ev.stopPropagation();
-      const idxButter = state.placedInstances.findIndex(p => p.id === 'bread_butter' && p.placement === 'side');
-      if(idxButter >= 0) {
-        const prev = state.placedInstances[idxButter];
-        const slot = prev.sideSlot;
-        state.placedInstances.splice(idxButter, 1, {
-          id: 'bread_butter_cheese',
-          label: catalogFind('bread_butter_cheese').label,
-          kcalPerPortion: catalogFind('bread_butter_cheese').kcal,
-          gramsPerPortion: catalogFind('bread_butter_cheese').gramsPerPortion || prev.gramsPerPortion || 40,
-          grams: prev.grams,
-          x: prev.x, y: prev.y,
-          sizePx: SIZE_MAP['bread_butter_cheese'] || prev.sizePx,
-          rotationDeg: 0, placement: 'side', sideSlot: slot, fraction: prev.fraction || 1
+        // add new variant to a side slot
+        const slot = reserveSideSlot();
+        state.placedInstances.push({
+          id: 'bread_variant',
+          label: optsLocal.label,
+          kcalPerPortion: kcalBase + (optsLocal.kcalAdd || 0),
+          gramsPerPortion: gramsBase,
+          grams: gramsBase,
+          x: 0, y: 0,
+          sizePx: SIZE_MAP['bread'] || 72,
+          rotationDeg: 0, placement: 'side', sideSlot: slot, fraction: 1,
+          _imgOverride: optsLocal.img
         });
       }
       renderPlate(); updateSummary();
+    }
+
+    // add butter: +102 kcal example, image path assumed present
+    btnAddButter.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      upsertBreadVariant({ label: 'Bread with butter', kcalAdd: 102, img: 'images/bread-with-butter.svg' });
+    });
+
+    // add cheese: upgrade to butter+cheese (or create variant)
+    btnAddCheese.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      upsertBreadVariant({ label: 'Bread with butter and cheese', kcalAdd: 102 + 110, img: 'images/cheese-bread.svg' });
     });
   }
 
@@ -301,7 +295,6 @@ const plateEl = document.getElementById('plate');
 const plateCard = document.getElementById('platecard');
 
 function renderPlate(){
-  // clear previous
   plateEl.innerHTML = '';
   Array.from(plateCard.querySelectorAll('.side-placed-wrapper')).forEach(n=>n.remove());
   plateEl.style.width = PLATE_DIAMETER + 'px';
@@ -310,7 +303,6 @@ function renderPlate(){
 
   state.placedInstances.forEach((inst, idx) => {
     const catalogItem = catalogFind(inst.id) || {};
-    // wrapper positioned at anchor point to avoid clipping and stray badges
     const wrapper = document.createElement('div');
     wrapper.className = 'placed-wrapper';
     wrapper.dataset.instanceIdx = idx;
@@ -318,57 +310,41 @@ function renderPlate(){
     wrapper.style.height = inst.sizePx + 'px';
     wrapper.style.zIndex = 10 + idx;
     wrapper.style.transform = `translate(-50%,-50%) rotate(${inst.rotationDeg||0}deg)`;
-    // ensure pointer events for wrapper but not for inner image
     wrapper.style.pointerEvents = 'auto';
 
-    // inner image (we won't scale the wrapper; we handle quarter as scaled image
     const innerImg = document.createElement('img');
-    innerImg.src = catalogItem.img || ('images/' + inst.id + '.svg');
+    // prefer instance override (bread_variant) image when present
+    const imgPath = inst._imgOverride || (catalogItem.img || ('images/' + inst.id + '.svg'));
+    innerImg.src = imgPath;
     innerImg.alt = inst.label || inst.id;
-    // remove any title attribute to avoid numbers showing on hover or on some browsers
     innerImg.removeAttribute('title');
-
-    // classes and base styles handled by CSS; ensure no inline width/height conflict
     innerImg.classList.remove('clip-half');
 
-    // determine fraction behavior: half -> clipped diagonal; quarter -> scaled down; full -> normal
     const fraction = inst.fraction || (inst.grams && inst.gramsPerPortion ? (inst.grams / inst.gramsPerPortion) : 1);
+
     if (Math.abs(fraction - 1) < 0.001) {
-      // full: show image normally (no scaling)
       innerImg.style.transform = 'scale(1)';
       innerImg.style.opacity = '1';
       innerImg.classList.remove('clip-half');
     } else if (Math.abs(fraction - 0.5) < 0.001) {
-      // half: apply diagonal clipping mask and show at full size (visual half without shrinking)
+      // half: diagonal top-left -> bottom-right
       innerImg.style.transform = 'scale(1)';
       innerImg.style.opacity = '1';
       innerImg.classList.add('clip-half');
     } else {
-      // quarter or other fractional: scale the img inside wrapper to indicate smaller portion
+      // quarter or other fractional: scale inside wrapper
       const imgScale = Math.max(0.25, Math.min(1.0, fraction));
       innerImg.style.transform = `scale(${imgScale})`;
       innerImg.style.opacity = '1';
       innerImg.classList.remove('clip-half');
     }
 
-    // click to remove instance
     wrapper.addEventListener('click', ()=> { state.placedInstances.splice(idx,1); renderPlate(); updateSummary(); });
-
     wrapper.appendChild(innerImg);
 
-    // fraction badge: do NOT show for full portion (fraction==1). If desired, we can hide entirely.
-    // The user asked to hide numbers on plate; so we will NOT append any badge into the plate.
-    // If you still want a tiny indicator, uncomment the block below.
-    /*
-    if (fraction !== 1) {
-      const badge = document.createElement('div');
-      badge.className = 'fraction-badge';
-      badge.textContent = (fraction === 0.5 ? '1/2' : (fraction === 0.25 ? '1/4' : fraction.toString()));
-      wrapper.appendChild(badge);
-    }
-    */
+    // badge is intentionally hidden on plate per request (uncomment if needed)
+    // if (fraction !== 1) { const badge = document.createElement('div'); badge.className='fraction-badge'; badge.textContent = (fraction===0.5?'1/2':(fraction===0.25?'1/4':fraction.toString())); wrapper.appendChild(badge); }
 
-    // append to correct parent and position
     if (inst.placement === 'onplate') {
       wrapper.style.left = inst.x + 'px';
       wrapper.style.top = inst.y + 'px';
@@ -384,7 +360,6 @@ function renderPlate(){
       plateCard.appendChild(wrapper);
     }
   });
-
   updateSummary();
 }
 
@@ -394,9 +369,10 @@ function updateSummary() {
   if(state.placedInstances.length === 0) { sumDiv.innerHTML = '<div class="small">Plate is empty</div>'; return; }
   const agg = {}; let totalKcal = 0; let totalGrams = 0;
   state.placedInstances.forEach(it=>{
-    agg[it.id] = agg[it.id] || {label: it.label, grams:0, gramsPerPortion: it.gramsPerPortion};
-    agg[it.id].grams += it.grams;
-    totalKcal += Math.round((it.kcalPerPortion || 0) * (it.grams / it.gramsPerPortion));
+    const key = it.id === 'bread_variant' ? (it.label || 'Bread (variant)') : it.label;
+    agg[key] = agg[key] || {label: key, grams:0, gramsPerPortion: it.gramsPerPortion || 0};
+    agg[key].grams += it.grams;
+    totalKcal += Math.round((it.kcalPerPortion || 0) * (it.grams / (it.gramsPerPortion || 1)));
     totalGrams += it.grams;
   });
   let html = `<div><strong>Total kcal (est):</strong> ${totalKcal}</div>`;
@@ -419,7 +395,7 @@ document.getElementById('submit').addEventListener('click', ()=> {
     name: document.getElementById('name').value || '',
     timestamp: new Date().toISOString(),
     sessionLabel: 'Local session',
-    positions: state.placedInstances.map(it => ({ id: it.id, grams: it.grams, x: it.x, y: it.y, sizePx: it.sizePx, rotationDeg: it.rotationDeg, placement: it.placement, sideSlot: it.sideSlot }))
+    positions: state.placedInstances.map(it => ({ id: it.id, label: it.label, grams: it.grams, x: it.x, y: it.y, sizePx: it.sizePx, rotationDeg: it.rotationDeg, placement: it.placement, sideSlot: it.sideSlot }))
   };
   const box = document.getElementById('payloadBox');
   box.style.display = 'block';
@@ -437,7 +413,7 @@ document.getElementById('gotoCompare').addEventListener('click', ()=> {
     name: document.getElementById('name').value || '',
     timestamp: new Date().toISOString(),
     sessionLabel: 'Local session',
-    positions: state.placedInstances.map(it => ({ id: it.id, grams: it.grams, x: it.x, y: it.y, sizePx: it.sizePx, rotationDeg: it.rotationDeg, placement: it.placement, sideSlot: it.sideSlot }))
+    positions: state.placedInstances.map(it => ({ id: it.id, label: it.label, grams: it.grams, x: it.x, y: it.y, sizePx: it.sizePx, rotationDeg: it.rotationDeg, placement: it.placement, sideSlot: it.sideSlot }))
   };
   sessionStorage.setItem('plate_positions_fallback', JSON.stringify(payload));
   // navigate to compare page (will read sessionStorage fallback if no sessionId param)
@@ -459,5 +435,3 @@ updateSummary();
 
 </body>
 </html>
-
-
