@@ -99,10 +99,10 @@
 <script>
 /*
  - Scale determined by total calories: scale = sqrt(targetCalories / actualCalories)
- - Uses payload.totalCalories (provided by index.html) when present, otherwise falls back to computing from grams
- - caloriesPerGram mapping provided; adjust values if your dataset uses different foods
+ - Uses payload.totalCalories (provided by index.html) when present, otherwise computes from positions
+ - preserves bread_variant, _imgOverride, fraction, grams and kcalPerPortion transferred from index.html
  - overlay scaledGroup contains on-plate items and SVG circle so the plate remains circular
- - base on-plate items hidden while overlay is active to avoid duplicate appearance
+ - base on-plate items are hidden while overlay is active to avoid duplicate appearance
 */
 
 const SESSION_KEY = 'plate_positions_fallback';
@@ -152,20 +152,36 @@ function loadPayload(){
   try { return JSON.parse(raw); } catch(e){ return null; }
 }
 
+/*
+ Normalize payload but do NOT overwrite properties that index.html intentionally included:
+ - keep p.kcalPerPortion, p.gramsPerPortion, p._imgOverride, p.grams, p.fraction if present
+ - ensure minimal defaults if some fields are missing
+*/
 function normalizePayload(p){
   (p.positions || []).forEach(item => {
-    if (!item.gramsPerPortion) item.gramsPerPortion = item.gramsPerPortion || 100;
+    // preserve existing values when present
+    if (typeof item.gramsPerPortion !== 'number') item.gramsPerPortion = item.gramsPerPortion || 100;
     if (!('grams' in item) || item.grams == null) {
       if ('fraction' in item && item.fraction && item.gramsPerPortion) item.grams = Math.round(item.fraction * item.gramsPerPortion);
       else item.grams = item.gramsPerPortion || 0;
     }
-    if (item.gramsPerPortion && item.grams) item.fraction = Math.round((item.grams / item.gramsPerPortion) * 100) / 100;
-    if (Math.abs((item.fraction || 0) - 0.5) < 0.02) item.fraction = 0.5;
+    if (item.gramsPerPortion && item.grams) {
+      // preserve precise fraction as recorded; avoid clobbering halves/quarters
+      item.fraction = Number((item.grams / item.gramsPerPortion).toFixed(3));
+    } else {
+      item.fraction = item.fraction || 1;
+    }
+    // keep any provided kcalPerPortion or _imgOverride from index
+    if (item._imgOverride) item._imgOverride = item._imgOverride;
+    if (item.kcalPerPortion) item.kcalPerPortion = item.kcalPerPortion;
   });
 
-  // ensure totalCalories exists and is numeric; keep it if provided from index.html
+  // prefer totalCalories passed from index.html; if missing, compute from positions
   if (!('totalCalories' in p) || typeof p.totalCalories !== 'number') {
     p.totalCalories = totalCaloriesPayloadFromPositions(p.positions || []);
+  } else {
+    // ensure it's numeric integer
+    p.totalCalories = Math.round(Math.max(0, Number(p.totalCalories) || 0));
   }
 }
 
@@ -191,13 +207,17 @@ function renderBase(targetBase){
     w.style.height = (p.sizePx||48) + 'px';
     w.style.transform = `translate(-50%,-50%) rotate(${p.rotationDeg||0}deg)`;
     const img = document.createElement('img');
+
+    // prefer instance override (bread_variant / bread with butter/cheese)
     img.src = (p._imgOverride || CATALOG_IMG[p.id] || ('images/' + (p.id || 'unknown') + '.svg'));
     img.alt = p.label || p.id || '';
     img.classList.remove('clip-half'); img.style.transform = '';
-    const frac = p.fraction || 1;
+
+    // respect fractional presentation preserved from index (half/quarter)
+    const frac = (typeof p.fraction === 'number') ? p.fraction : 1;
     if (Math.abs(frac - 0.5) < 0.001) img.classList.add('clip-half');
     else if (frac < 0.5) img.style.transform = `scale(${Math.max(0.25, Math.min(1, frac))})`;
-    img.style.filter = '';
+
     w.appendChild(img);
     targetBase.appendChild(w);
   });
@@ -220,7 +240,7 @@ function buildScaledOverlay(targetOverlay){
   scaledGroup.style.transform = 'translate(-50%,-50%) scale(var(--overlay-baseline))';
   scaledGroup.style.transformOrigin = '50% 50%';
 
-  // perfect circle svg (kept transparent - overlay scaling will affect element sizes)
+  // perfect circle svg (transparent stroke so scaling keeps circular shape)
   const svgNS = 'http://www.w3.org/2000/svg';
   const svg = document.createElementNS(svgNS,'svg');
   svg.setAttribute('viewBox','0 0 100 100');
@@ -245,12 +265,15 @@ function buildScaledOverlay(targetOverlay){
     w.style.height = (p.sizePx||48) + 'px';
     w.style.transform = `translate(-50%,-50%) rotate(${p.rotationDeg||0}deg)`;
     const img = document.createElement('img');
+
     img.src = (p._imgOverride || CATALOG_IMG[p.id] || ('images/' + (p.id || 'unknown') + '.svg'));
     img.alt = p.label || p.id || '';
     img.classList.remove('clip-half'); img.style.transform = '';
-    const frac = p.fraction || 1;
+
+    const frac = (typeof p.fraction === 'number') ? p.fraction : 1;
     if (Math.abs(frac - 0.5) < 0.001) img.classList.add('clip-half');
     else if (frac < 0.5) img.style.transform = `scale(${Math.max(0.25, Math.min(1, frac))})`;
+
     w.appendChild(img);
     scaledGroup.appendChild(w);
   });
@@ -273,6 +296,11 @@ function totalCaloriesFromMap(map){
 }
 function totalCaloriesPayloadFromPositions(positions){
   return (positions || []).reduce((s,p) => {
+    // if payload included explicit kcalPerPortion / gramsPerPortion, prefer those values for accuracy
+    if (typeof p.kcalPerPortion === 'number' && typeof p.gramsPerPortion === 'number' && p.gramsPerPortion > 0) {
+      const calPerG = (p.kcalPerPortion / p.gramsPerPortion);
+      return s + (p.grams || 0) * calPerG;
+    }
     const calPerG = CAL_PER_G[p.id] !== undefined ? CAL_PER_G[p.id] : 0.8;
     return s + (p.grams || 0) * calPerG;
   }, 0);
@@ -293,29 +321,24 @@ function drawAnnulus(annNode, scale){
   const baseDia = Math.min(canvasRect.width, canvasRect.height) * platePct;
   const scaledDia = baseDia * scale;
 
-  // When scale > 1: annulus should start at plate edge and extend outward to scaledDia.
-  // When scale < 1: annulus should start at scaledDia and end at plate edge (we draw a red ring inside).
-  let ann = document.createElement('div');
+  const ann = document.createElement('div');
   ann.className = 'annulus';
 
   if (scale >= 1) {
-    // outer diameter equals scaledDia; inner diameter equals baseDia
+    // growth: annulus outer = scaledDia, inner = baseDia
     const outer = scaledDia;
     const thickness = Math.max(4, (scaledDia - baseDia) / 2);
-    // to make inner edge coincide with base plate edge, set width to outer and border thickness to thickness
     ann.style.width = outer + 'px';
     ann.style.height = outer + 'px';
     ann.style.border = `${thickness}px solid limegreen`;
     ann.style.boxSizing = 'border-box';
     ann.style.opacity = 0.9;
   } else {
-    // scale < 1: draw an inward red ring whose outer edge is baseDia and inner edge is scaledDia
+    // shrink: annulus outer = baseDia, thickness occupies inward space down to scaledDia
     const outer = baseDia;
     const thickness = Math.max(4, (baseDia - scaledDia) / 2);
     ann.style.width = outer + 'px';
     ann.style.height = outer + 'px';
-    // draw border that visually occupies the inward space by using border with negative offset via outline trick is not available,
-    // but centering the border over the outer circle makes inner edge at scaled diameter when border thickness = (outer - scaled)/2
     ann.style.border = `${thickness}px solid tomato`;
     ann.style.boxSizing = 'border-box';
     ann.style.opacity = 0.95;
@@ -324,7 +347,7 @@ function drawAnnulus(annNode, scale){
   annNode.appendChild(ann);
 }
 
-// compute totals for targetMap; if targetMap omitted, use recommended mapping or prompt as needed
+// compute scale from calories (with sane bounds)
 function computeScaleFromCalories(targetMap){
   const actualCal = Math.max(1, totalCaloriesPayload());
   const targetCal = Math.max(0, totalCaloriesFromMap(targetMap || {}));
@@ -335,7 +358,6 @@ function computeScaleFromCalories(targetMap){
 // run compare: build overlay, hide base on-plate items, draw annulus and set uniform scale on overlay group
 function runCompare(targetOverlay, targetBase, annNode, captionEl, targetMap, title){
   if (!payload) { alert('No saved plate'); return; }
-  captionEl.textContent = title || '';
 
   // clear previous
   targetOverlay.innerHTML = '';
@@ -360,25 +382,18 @@ function runCompare(targetOverlay, targetBase, annNode, captionEl, targetMap, ti
     requestAnimationFrame(()=> scaledGroup.style.transform = `translate(-50%,-50%) scale(${scale})`);
   }
 
-  // caption: show calorie totals + diffs per item
+  // caption: show only percentage difference (signed)
   setTimeout(()=> {
     const actualCal = Math.round(totalCaloriesPayload());
     const targetCal = Math.round(totalCaloriesFromMap(targetMap || {}));
-    const diffPct = targetCal === 0 ? (actualCal === 0 ? 0 : -100) : Math.round(((targetCal - actualCal) / Math.max(1, actualCal)) * 100);
-
-    // simple per-id diff summary
-    const agg = {};
-    (payload.positions || []).forEach(p => { agg[p.id] = (agg[p.id]||0) + (p.grams || 0); });
-    const diffs = [];
-    const ids = new Set([...Object.keys(agg), ...Object.keys(targetMap || {})]);
-    ids.forEach(id => {
-      const a = agg[id] || 0; const t = (targetMap && (targetMap[id] || 0)) || 0;
-      if (Math.abs(a - t) < 1) return;
-      const pct = a === 0 ? (t>0?100:0) : Math.round(((t - a) / Math.max(1,a)) * 100);
-      diffs.push(`${id}: ${Math.round(a)}g→${Math.round(t)}g (${pct>=0?'+':''}${pct}%)`);
-    });
-    captionEl.textContent = `${title? title + ': ' : ''} total kcal ${actualCal} → ${targetCal} (${diffPct>=0?'+':''}${diffPct}%); ${diffs.length? diffs.join('; '): 'No significant changes'}`;
-  }, 900);
+    // percent difference relative to actual: ((target - actual)/actual)*100
+    let diffPct = 0;
+    if (actualCal > 0) diffPct = Math.round(((targetCal - actualCal) / actualCal) * 100);
+    else diffPct = targetCal > 0 ? 100 : 0;
+    // keep sign (e.g., -49% or +20%)
+    const sign = diffPct > 0 ? '+' : '';
+    captionEl.textContent = `${title || ''}: ${sign}${diffPct}% difference`;
+  }, 950);
 }
 
 // clear compare: remove overlay, annulus, and show base on-plate items again
