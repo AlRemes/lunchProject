@@ -2,24 +2,24 @@
 <html>
 <head>
 <meta charset="utf-8"/>
-<title>Compare Plate — whole-plate scaling (preserve halves)</title>
+<title>Compare Plate — whole plate scale (fixed)</title>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <style>
-  body{font-family:Arial,margin:14px;background:#f6f6f7}
+  body{font-family:Arial;margin:14px;background:#f6f6f7}
   .topbar{display:flex;gap:12px;align-items:center;justify-content:center;margin-bottom:10px}
   .btn{padding:8px 12px;border-radius:6px;border:1px solid #bbb;background:#fff;cursor:pointer}
   #stage{position:relative;width:980px;height:660px;margin:6px auto;border-radius:8px;background:#fff;padding:16px;box-shadow:0 6px 22px rgba(0,0,0,0.08)}
   #plateWrap{position:relative;width:720px;height:640px;margin:0 auto}
-  /* plateCanvas contains two stacked layers: baseLayer (gray template) and overlayLayer (colored, scaled as a group) */
+  /* plateCanvas contains two stacked layers:
+     - baseLayer: gray template showing full saved scene (plate, on-plate items and side items)
+     - overlayLayer: colored plate circle + only on-plate items; this is what we scale as a single unit */
   #plateCanvas{position:relative;width:520px;height:520px;border-radius:50%;background:#fff6e6;border:8px solid #eee;overflow:visible;margin:10px auto}
   #plateCanvas .layer{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none}
   #baseLayer{z-index:0; transform-origin:50% 50%;}
-  #overlayLayer{z-index:2; transform-origin:50% 50%; /* overlay initial slightly smaller ready to grow */ transform:scale(0.92);}
-  .baseItemWrapper{position:absolute; transform:translate(-50%,-50%); pointer-events:none;}
-  .baseItemWrapper img{display:block;width:100%;height:100%;object-fit:contain}
-  .overlayWrapper{position:absolute; transform:translate(-50%,-50%); pointer-events:none; transition: opacity 300ms ease}
-  .overlayWrapper img{display:block;width:100%;height:100%;object-fit:contain; pointer-events:none}
-  /* clipped half: top-left -> bottom-right */
+  #overlayLayer{z-index:2; transform-origin:50% 50%; transform:scale(0.92);} /* initial slightly smaller */
+  .plateCircle { position:absolute; left:50%; top:50%; width:88%; height:88%; transform:translate(-50%,-50%); border-radius:50%; background:transparent; }
+  .baseItemWrapper, .overlayItemWrapper{position:absolute; transform:translate(-50%,-50%); pointer-events:none;}
+  .baseItemWrapper img, .overlayItemWrapper img{display:block;width:100%;height:100%;object-fit:contain}
   .clip-half { -webkit-clip-path: polygon(0 0, 100% 100%, 0 100%); clip-path: polygon(0 0, 100% 100%, 0 100%); }
   #caption{margin-top:12px;text-align:center;font-size:14px}
   .small{font-size:13px;color:#444}
@@ -45,19 +45,17 @@
 
 <script>
 /*
- compare.html — whole-plate scaling; preserves clipped halves for sausage/carrot
- - Uses sessionStorage key 'plate_positions_fallback' (or optional server sessionId)
- - overlayLayer is scaled as a single unit; individual images keep their saved fraction visuals
+ compare.html — final fix
+ - overlayLayer contains: plate circle + only on-plate items (colored) and is scaled as a group
+ - baseLayer contains entire saved scene (template) including side items (gray)
+ - normalization enforces gramsPerPortion and fraction; near-0.5 fractions are snapped to 0.5 to keep clipped halves
+ - overlay initial scale = 0.92 so growth is visible
 */
 
-const WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbxEpMGjGgkn8a7_RG0-fSyPj-IZny88ZChcqtQ_ks1ALOv0bxrKYTmLy8pSjx0A5euX5A/exec';
-const PLATE_CANVAS_PX = 520; // must match CSS size
+const PLATE_CANVAS_PX = 520;
+const SESSION_KEY = 'plate_positions_fallback';
 
-function qs(name){ const u = new URL(location.href); return u.searchParams.get(name); }
-
-let basePayload = null;
-
-// small catalog: image path + canonical gramsPerPortion
+// Minimal catalog mapping for gramsPerPortion and image fallback
 const CATALOG = {
   potato: { img:'images/potato.svg', gramsPerPortion:150 },
   sausage: { img:'images/sausage.svg', gramsPerPortion:75 },
@@ -68,9 +66,11 @@ const CATALOG = {
   milk: { img:'images/milk-carton.svg', gramsPerPortion:250 }
 };
 
-// side slots placed well to the right so side items do not overlap plate
+let basePayload = null;
+
+// side slots placed to the right so side items don't overlap the plate
 function computeSideSlots() {
-  const columnX = PLATE_CANVAS_PX + 56; // further right
+  const columnX = PLATE_CANVAS_PX + 56;
   const slotStartY = 28;
   const slotSpacing = 56;
   const slotBaseHeight = 48;
@@ -82,33 +82,17 @@ function computeSideSlots() {
   return slots;
 }
 
-// load payload (server sessionId optional) or sessionStorage fallback
-async function loadBase() {
-  const sid = qs('sessionId');
-  if (sid) {
-    try {
-      const res = await fetch(WEB_APP_URL + '?mode=session&sessionId=' + encodeURIComponent(sid));
-      if (res.ok) {
-        const json = await res.json().catch(()=>null);
-        if (json && json.payload) basePayload = json.payload;
-      }
-    } catch(e){ console.warn('session fetch failed', e); }
-  }
-  if (!basePayload) {
-    const fallback = sessionStorage.getItem('plate_positions_fallback');
-    if (fallback) basePayload = JSON.parse(fallback);
-  }
-  if (!basePayload) {
-    alert('No plate payload found. Build a plate and click Compare from the build page.');
-    return;
-  }
+function loadPayloadFromSession() {
+  const raw = sessionStorage.getItem(SESSION_KEY);
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch(e){ return null; }
+}
 
-  // Normalize anchors so fraction and gramsPerPortion exist; ensure half detection tolerance
+// normalize payload entries so fraction & gramsPerPortion exist; snap near-half fractions to exact 0.5
+function normalizePayload(payload) {
   const slots = computeSideSlots();
-  (basePayload.positions || []).forEach(p => {
+  (payload.positions || []).forEach(p => {
     if (typeof p.id === 'string') p.id = p.id.trim();
-
-    // set canonical gramsPerPortion when known
     if (CATALOG[p.id]) p.gramsPerPortion = p.gramsPerPortion || CATALOG[p.id].gramsPerPortion;
     else if (p.id === 'bread_variant' || (p.label && p.label.toLowerCase().includes('bread'))) {
       p.gramsPerPortion = p.gramsPerPortion || (CATALOG.bread && CATALOG.bread.gramsPerPortion) || 40;
@@ -122,7 +106,7 @@ async function loadBase() {
       p.gramsPerPortion = p.gramsPerPortion || 100;
     }
 
-    // restore side-slot coords if placement = side
+    // restore side-slot coordinates if needed
     if (p.placement === 'side') {
       if (typeof p.sideSlot === 'number') {
         const s = slots[Math.min(p.sideSlot, slots.length-1)];
@@ -134,100 +118,124 @@ async function loadBase() {
       }
     }
 
-    // ensure grams present (derive from fraction if needed)
+    // ensure grams present
     if (!('grams' in p) || p.grams == null) {
       if ('fraction' in p && p.fraction && p.gramsPerPortion) p.grams = Math.round(p.fraction * p.gramsPerPortion);
       else if (p.gramsPerPortion) p.grams = p.gramsPerPortion;
       else p.grams = 0;
     }
 
-    // compute fraction and keep to 2 decimals
+    // compute fraction (2 decimals)
     if (p.gramsPerPortion && p.grams) p.fraction = Math.round((p.grams / p.gramsPerPortion) * 100) / 100;
     else if (!('fraction' in p)) p.fraction = 1;
 
-    // detect exact-half tolerance: if fraction is very close to 0.5 (±0.02) treat as half to avoid float rounding removing the clip
+    // snap near-half to 0.5 to avoid float-loss of clip-half
     if (Math.abs((p.fraction || 0) - 0.5) < 0.02) p.fraction = 0.5;
   });
-
-  renderBaseAndOverlay();
 }
 
-// draw template (gray) and overlay (colored). overlayLayer will be scaled as a group on comparison.
-function renderBaseAndOverlay() {
+// render baseLayer: full saved scene (plate + on-plate + side items) in gray
+function renderBaseLayer(payload) {
   const baseLayer = document.getElementById('baseLayer');
-  const overlayLayer = document.getElementById('overlayLayer');
-  baseLayer.innerHTML = ''; overlayLayer.innerHTML = '';
-  (basePayload.positions || []).forEach(p => {
-    // base item (template)
-    const bw = document.createElement('div'); bw.className='baseItemWrapper';
-    bw.style.left = (p.x || 0) + 'px'; bw.style.top = (p.y || 0) + 'px';
-    bw.style.width = (p.sizePx || 48) + 'px'; bw.style.height = (p.sizePx || 48) + 'px';
-    bw.style.transform = `translate(-50%,-50%) rotate(${p.rotationDeg||0}deg)`;
-    const bi = document.createElement('img');
-    bi.src = (p._imgOverride || (CATALOG[p.id] && CATALOG[p.id].img) || ('images/' + (p.id || 'unknown') + '.svg'));
-    bi.alt = p.label || p.id || '';
-    bi.classList.remove('clip-half'); bi.style.transform = '';
+  baseLayer.innerHTML = '';
+  // draw plate background (template) as gray circle to match look
+  const plateBg = document.createElement('div');
+  plateBg.className = 'plateCircle';
+  plateBg.style.background = 'rgba(255,255,255,0.0)'; // keep transparent center; border handled by canvas
+  baseLayer.appendChild(plateBg);
+
+  (payload.positions || []).forEach(p => {
+    const w = document.createElement('div');
+    w.className = 'baseItemWrapper';
+    w.style.left = (p.x||0)+'px'; w.style.top = (p.y||0)+'px';
+    w.style.width = (p.sizePx||48)+'px'; w.style.height = (p.sizePx||48)+'px';
+    w.style.transform = `translate(-50%,-50%) rotate(${p.rotationDeg||0}deg)`;
+    const img = document.createElement('img');
+    img.src = (p._imgOverride || (CATALOG[p.id] && CATALOG[p.id].img) || ('images/' + (p.id || 'unknown') + '.svg'));
+    img.alt = p.label || p.id || '';
+    img.classList.remove('clip-half');
+    img.style.transform = '';
     const frac = p.fraction || 1;
-    if (Math.abs(frac - 0.5) < 0.001) bi.classList.add('clip-half');
-    else if (frac < 0.5) bi.style.transform = `scale(${Math.max(0.25, Math.min(1, frac))})`;
-    bw.appendChild(bi); baseLayer.appendChild(bw);
-
-    // overlay item (colored). Do NOT resize these individually during compare.
-    const ow = document.createElement('div'); ow.className='overlayWrapper';
-    ow.style.left = (p.x || 0) + 'px'; ow.style.top = (p.y || 0) + 'px';
-    ow.style.width = (p.sizePx || 48) + 'px'; ow.style.height = (p.sizePx || 48) + 'px';
-    ow.style.transform = `translate(-50%,-50%) rotate(${p.rotationDeg||0}deg)`; ow.style.opacity = '1';
-    const oi = document.createElement('img');
-    oi.src = (p._imgOverride || (CATALOG[p.id] && CATALOG[p.id].img) || ('images/' + (p.id || 'unknown') + '.svg'));
-    oi.alt = p.label || p.id || '';
-    oi.classList.remove('clip-half'); oi.style.transform = '';
-    if (Math.abs(frac - 0.5) < 0.001) oi.classList.add('clip-half');
-    else if (frac < 0.5) oi.style.transform = `scale(${Math.max(0.25, Math.min(1, frac))})`;
-    ow.appendChild(oi); overlayLayer.appendChild(ow);
+    if (Math.abs(frac - 0.5) < 0.001) img.classList.add('clip-half');
+    else if (frac < 0.5) img.style.transform = `scale(${Math.max(0.25, Math.min(1, frac))})`;
+    // desaturate template images by CSS filter to appear gray (keep same elements)
+    img.style.filter = 'grayscale(1)';
+    w.appendChild(img);
+    baseLayer.appendChild(w);
   });
-
-  // overlay initial scale slightly smaller to allow visible expansion
-  document.getElementById('overlayLayer').style.transform = 'scale(0.92)';
 }
 
-// compute totals across payload and targetMap
-function computeTotals(targetMap) {
-  const positions = basePayload.positions || [];
-  const actualTotal = positions.reduce((s,p) => s + (p.grams || 0), 0);
-  let targetTotal = 0;
-  Object.keys(targetMap || {}).forEach(id => { targetTotal += (targetMap[id] || 0); });
-  return { actualTotal, targetTotal };
+// render overlayLayer: a separate plate circle + only on-plate items in full color (this layer is scaled)
+function renderOverlayLayer(payload) {
+  const overlay = document.getElementById('overlayLayer');
+  overlay.innerHTML = '';
+  // overlay plate circle (colored) so scaling affects the visual plate as well
+  const plate = document.createElement('div');
+  plate.className = 'plateCircle';
+  plate.style.background = 'transparent';
+  overlay.appendChild(plate);
+
+  // render only on-plate items (do NOT render side items here)
+  (payload.positions || []).forEach(p => {
+    if (p.placement && p.placement === 'side') return; // skip side items: they stay static in baseLayer
+
+    const w = document.createElement('div');
+    w.className = 'overlayItemWrapper';
+    w.style.left = (p.x||0) + 'px'; w.style.top = (p.y||0) + 'px';
+    w.style.width = (p.sizePx||48) + 'px'; w.style.height = (p.sizePx||48) + 'px';
+    w.style.transform = `translate(-50%,-50%) rotate(${p.rotationDeg||0}deg)`;
+    const img = document.createElement('img');
+    img.src = (p._imgOverride || (CATALOG[p.id] && CATALOG[p.id].img) || ('images/' + (p.id || 'unknown') + '.svg'));
+    img.alt = p.label || p.id || '';
+    img.classList.remove('clip-half'); img.style.transform = '';
+    const frac = p.fraction || 1;
+    if (Math.abs(frac - 0.5) < 0.001) img.classList.add('clip-half');
+    else if (frac < 0.5) img.style.transform = `scale(${Math.max(0.25, Math.min(1, frac))})`;
+    w.appendChild(img);
+    overlay.appendChild(w);
+  });
+  // overlay starts slightly smaller (ready to grow)
+  overlay.style.transform = 'scale(0.92)';
 }
 
-// whole-plate scaling animation: overlayLayer scales as a single group
-function animateWholePlate(targetMap, title) {
-  if (!basePayload || !basePayload.positions || basePayload.positions.length === 0) { alert('No plate to compare.'); return; }
+// compute totals used for scaling (targetMap expects id -> grams)
+function computeTotals(payload, targetMap) {
+  const actual = (payload.positions || []).reduce((s,p) => s + (p.grams || 0), 0);
+  let target = 0;
+  Object.keys(targetMap || {}).forEach(k => { target += (targetMap[k] || 0); });
+  return { actual, target };
+}
+
+// animate overlayLayer as a single unit (scale = sqrt(target/actual))
+function animateWholeOverlay(targetMap, title) {
+  if (!basePayload || !basePayload.positions || basePayload.positions.length === 0) { alert('No plate loaded.'); return; }
   document.getElementById('caption').textContent = title || '';
 
-  const { actualTotal, targetTotal } = computeTotals(targetMap || {});
-  const safeActual = Math.max(1, actualTotal);
-  const safeTarget = Math.max(0, targetTotal);
+  const { actual, target } = computeTotals(basePayload, targetMap || {});
+  const safeActual = Math.max(1, actual);
+  const safeTarget = Math.max(0, target);
   let scale = 1.0;
   if (safeTarget <= 0) scale = 0.001;
   else scale = Math.sqrt(safeTarget / safeActual);
+  // clamp
   scale = Math.max(0.12, Math.min(3.0, scale));
 
-  // gray the template only
+  // gray template only
   const baseLayer = document.getElementById('baseLayer');
   baseLayer.style.transition = 'filter 400ms ease, opacity 400ms ease';
   baseLayer.style.filter = 'grayscale(1)';
   baseLayer.style.opacity = '0.45';
 
-  // scale overlayLayer as a whole (keeps clipped halves intact because images remain unchanged)
-  const overlayLayer = document.getElementById('overlayLayer');
-  overlayLayer.style.transition = `transform 900ms cubic-bezier(.2,.9,.2,1), opacity 400ms ease`;
-  overlayLayer.style.transformOrigin = '50% 50%';
-  requestAnimationFrame(() => overlayLayer.style.transform = `scale(${scale})`);
+  // scale overlay group (this contains plate circle + on-plate items)
+  const overlay = document.getElementById('overlayLayer');
+  overlay.style.transition = `transform 900ms cubic-bezier(.2,.9,.2,1), opacity 400ms ease`;
+  overlay.style.transformOrigin = '50% 50%';
+  requestAnimationFrame(() => overlay.style.transform = `scale(${scale})`);
 
-  // show per-id diffs in caption after animation
+  // show diffs in caption
   setTimeout(() => {
     const aggActual = {};
-    basePayload.positions.forEach(p => { aggActual[p.id] = (aggActual[p.id]||0) + (p.grams||0); });
+    basePayload.positions.forEach(p => { aggActual[p.id] = (aggActual[p.id]||0) + (p.grams || 0); });
     const diffs = [];
     const ids = new Set([...Object.keys(aggActual), ...Object.keys(targetMap || {})]);
     ids.forEach(id => {
@@ -244,44 +252,52 @@ function animateWholePlate(targetMap, title) {
     });
     document.getElementById('caption').textContent = (title ? title + ': ' : '') + (top.length ? top.join('; ') : 'No significant changes');
 
-    // restore template and overlay after a pause; remove this if you want overlay to stay scaled
+    // restore template visuals and overlay baseline after a pause (remove if you want overlay to remain scaled)
     setTimeout(() => {
       baseLayer.style.filter = ''; baseLayer.style.opacity = '';
-      overlayLayer.style.transform = 'scale(0.92)';
+      overlay.style.transform = 'scale(0.92)';
     }, 2200);
   }, 1000);
 }
 
-// portions->grams helper for recommended example
-function portionsToGramsMap(portionsMap) {
-  const grams = {};
-  Object.keys(portionsMap||{}).forEach(id => {
-    const per = (CATALOG[id] && CATALOG[id].gramsPerPortion) || (id==='bread' && CATALOG.bread.gramsPerPortion) || 100;
-    grams[id] = (portionsMap[id] || 0) * per;
+// helper: convert portion counts to grams for recommended example
+function portionsToGramsMap(portions) {
+  const g = {};
+  Object.keys(portions||{}).forEach(id => {
+    const per = (CATALOG[id] && CATALOG[id].gramsPerPortion) || (id === 'bread' && CATALOG.bread && CATALOG.bread.gramsPerPortion) || 100;
+    g[id] = (portions[id] || 0) * per;
   });
-  return grams;
+  return g;
 }
 
-const recommendedCountsFinland_portions = { carrot:2, apple:1, potato:1, bread:0, sausage:1, milk:1, water:1 };
-const recommendedCountsFinland_grams = portionsToGramsMap(recommendedCountsFinland_portions);
+const recommendedPortions = { carrot:2, apple:1, potato:1, bread:0, sausage:1, milk:1, water:1 };
+const recommendedGrams = portionsToGramsMap(recommendedPortions);
 
 // UI wiring
 document.getElementById('backBtn').addEventListener('click', () => history.back());
-document.getElementById('cmpRecommendedBtn').addEventListener('click', () => {
-  animateWholePlate(recommendedCountsFinland_grams, 'Recommended (Finland) vs Estimate');
-});
+document.getElementById('cmpRecommendedBtn').addEventListener('click', () => animateWholeOverlay(recommendedGrams, 'Recommended (Finland) vs Estimate'));
 document.getElementById('cmpRealityBtn').addEventListener('click', () => {
   const raw = prompt('Enter target grams JSON mapping (e.g. { "potato": 200, "apple": 100 }) — leave empty to use recommended');
   let target = null;
-  if (!raw) target = recommendedCountsFinland_grams;
+  if (!raw) target = recommendedGrams;
   else {
     try { target = JSON.parse(raw); } catch(e){ alert('Invalid JSON'); return; }
   }
-  animateWholePlate(target, 'Reality vs Estimate');
+  animateWholeOverlay(target, 'Reality vs Estimate');
 });
 
-// init
-loadBase();
+// load payload and render
+(function init(){
+  const payload = loadPayloadFromSession();
+  if (!payload) {
+    document.getElementById('caption').textContent = 'No saved plate found in sessionStorage under key: ' + SESSION_KEY;
+    return;
+  }
+  basePayload = payload;
+  normalizePayload(basePayload);
+  renderBaseLayer(basePayload);
+  renderOverlayLayer(basePayload);
+})();
 </script>
 </body>
 </html>
