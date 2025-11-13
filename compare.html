@@ -7,7 +7,7 @@
 <style>
   :root {
     --canvas-size: 760px;
-    --plate-pct: 72%;    /* smaller plate so it can grow */
+    --plate-pct: 72%;
     --overlay-baseline: 0.92;
   }
   body{font-family:Arial;margin:14px;background:#f6f6f7}
@@ -19,7 +19,6 @@
   .panelHeader{display:flex;gap:10px;align-items:center;margin-bottom:8px}
   .panelTitle{font-weight:600}
   .canvasRow{display:flex;gap:18px;align-items:flex-start}
-  /* larger square canvas so scaling stays circular and there's lots of whitespace */
   .plateCanvas{position:relative;width:var(--canvas-size);height:var(--canvas-size);background:#fff6e6;border:8px solid #eee;overflow:visible;padding:80px;box-sizing:border-box;border-radius:50%}
   .layer{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none}
   .scaledContainer{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;overflow:visible}
@@ -31,7 +30,7 @@
   .caption{font-size:13px;color:#333;margin-top:8px;max-width:360px}
   .controls{display:flex;gap:8px;flex-wrap:wrap}
   .spacer{flex:1}
-  .annulus{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);border-radius:50%;pointer-events:none;opacity:0.45;box-sizing:border-box}
+  .annulus{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);border-radius:50%;pointer-events:none;opacity:0.9;box-sizing:border-box}
   .hidden-onplate { opacity:0; transform:scale(0.98); transition:opacity 220ms ease, transform 220ms ease; pointer-events:none; }
   @media (max-width:1000px){ :root{--canvas-size:560px} .plateCanvas{padding:44px} .scaledGroup{width:78%;height:78%} }
 </style>
@@ -100,8 +99,8 @@
 <script>
 /*
  - Scale determined by total calories: scale = sqrt(targetCalories / actualCalories)
+ - Uses payload.totalCalories (provided by index.html) when present, otherwise falls back to computing from grams
  - caloriesPerGram mapping provided; adjust values if your dataset uses different foods
- - payload read from sessionStorage key 'plate_positions_fallback'
  - overlay scaledGroup contains on-plate items and SVG circle so the plate remains circular
  - base on-plate items hidden while overlay is active to avoid duplicate appearance
 */
@@ -110,14 +109,14 @@ const SESSION_KEY = 'plate_positions_fallback';
 
 // calories per gram (kcal/g). Edit if you have better per-item numbers.
 const CAL_PER_G = {
-  potato: 0.77,   // 77 kcal / 100g
-  sausage: 2.5,   // 250 kcal / 100g
-  carrot: 0.41,   // 41 kcal / 100g
-  bread_variant: 2.5, // slice ~40g -> 100 kcal (approx)
+  potato: 0.77,
+  sausage: 2.5,
+  carrot: 0.41,
+  bread_variant: 2.5,
   bread: 2.5,
-  apple: 0.52,    // 52 kcal / 100g
-  orange: 0.47,   // 47 kcal / 100g
-  milk: 0.64,     // 64 kcal / 100g
+  apple: 0.52,
+  orange: 0.47,
+  milk: 0.64,
   water: 0.0
 };
 
@@ -154,12 +153,8 @@ function loadPayload(){
 }
 
 function normalizePayload(p){
-  // ensure gramsPerPortion and fraction exist; snap near-0.5 to 0.5 to preserve halves
   (p.positions || []).forEach(item => {
-    if (!item.gramsPerPortion) {
-      if (item.id && CAL_PER_G[item.id]) item.gramsPerPortion = 100; // fallback
-      else item.gramsPerPortion = item.gramsPerPortion || 100;
-    }
+    if (!item.gramsPerPortion) item.gramsPerPortion = item.gramsPerPortion || 100;
     if (!('grams' in item) || item.grams == null) {
       if ('fraction' in item && item.fraction && item.gramsPerPortion) item.grams = Math.round(item.fraction * item.gramsPerPortion);
       else item.grams = item.gramsPerPortion || 0;
@@ -167,12 +162,16 @@ function normalizePayload(p){
     if (item.gramsPerPortion && item.grams) item.fraction = Math.round((item.grams / item.gramsPerPortion) * 100) / 100;
     if (Math.abs((item.fraction || 0) - 0.5) < 0.02) item.fraction = 0.5;
   });
+
+  // ensure totalCalories exists and is numeric; keep it if provided from index.html
+  if (!('totalCalories' in p) || typeof p.totalCalories !== 'number') {
+    p.totalCalories = totalCaloriesPayloadFromPositions(p.positions || []);
+  }
 }
 
 // Render base layer (colored). mark on-plate with data-onplate so they can be hidden when overlay active.
 function renderBase(targetBase){
   targetBase.innerHTML = '';
-  // plate anchor for alignment
   const plateBg = document.createElement('div');
   plateBg.style.position='absolute';
   plateBg.style.left='50%'; plateBg.style.top='50%';
@@ -198,7 +197,7 @@ function renderBase(targetBase){
     const frac = p.fraction || 1;
     if (Math.abs(frac - 0.5) < 0.001) img.classList.add('clip-half');
     else if (frac < 0.5) img.style.transform = `scale(${Math.max(0.25, Math.min(1, frac))})`;
-    img.style.filter = ''; // keep colored
+    img.style.filter = '';
     w.appendChild(img);
     targetBase.appendChild(w);
   });
@@ -221,7 +220,7 @@ function buildScaledOverlay(targetOverlay){
   scaledGroup.style.transform = 'translate(-50%,-50%) scale(var(--overlay-baseline))';
   scaledGroup.style.transformOrigin = '50% 50%';
 
-  // perfect circle svg
+  // perfect circle svg (kept transparent - overlay scaling will affect element sizes)
   const svgNS = 'http://www.w3.org/2000/svg';
   const svg = document.createElementNS(svgNS,'svg');
   svg.setAttribute('viewBox','0 0 100 100');
@@ -272,14 +271,19 @@ function totalCaloriesFromMap(map){
   });
   return sum;
 }
-function totalCaloriesPayload(){
-  return (payload.positions || []).reduce((s,p) => {
+function totalCaloriesPayloadFromPositions(positions){
+  return (positions || []).reduce((s,p) => {
     const calPerG = CAL_PER_G[p.id] !== undefined ? CAL_PER_G[p.id] : 0.8;
     return s + (p.grams || 0) * calPerG;
   }, 0);
 }
+function totalCaloriesPayload(){
+  // Prefer payload.totalCalories passed from index.html; fallback to computing from positions
+  if (payload && typeof payload.totalCalories === 'number') return Math.max(0, Math.round(payload.totalCalories));
+  return Math.max(0, Math.round(totalCaloriesPayloadFromPositions(payload.positions || [])));
+}
 
-// Draw annulus flush to plate edge (no gap)
+// Draw annulus starting at the plate edge and extending outward for growth, inward for shrink
 function drawAnnulus(annNode, scale){
   annNode.innerHTML = '';
   if (!scale || isNaN(scale)) return;
@@ -288,15 +292,35 @@ function drawAnnulus(annNode, scale){
   const platePct = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--plate-pct')) / 100;
   const baseDia = Math.min(canvasRect.width, canvasRect.height) * platePct;
   const scaledDia = baseDia * scale;
-  const outer = Math.max(baseDia, scaledDia);
-  const thickness = Math.max(4, Math.abs(scaledDia - baseDia) / 2);
-  const ann = document.createElement('div');
+
+  // When scale > 1: annulus should start at plate edge and extend outward to scaledDia.
+  // When scale < 1: annulus should start at scaledDia and end at plate edge (we draw a red ring inside).
+  let ann = document.createElement('div');
   ann.className = 'annulus';
-  ann.style.width = outer + 'px';
-  ann.style.height = outer + 'px';
-  ann.style.border = `${thickness}px solid ${scale > 1 ? 'limegreen' : 'tomato'}`;
-  ann.style.left = '50%'; ann.style.top = '50%';
-  ann.style.transform = 'translate(-50%,-50%)';
+
+  if (scale >= 1) {
+    // outer diameter equals scaledDia; inner diameter equals baseDia
+    const outer = scaledDia;
+    const thickness = Math.max(4, (scaledDia - baseDia) / 2);
+    // to make inner edge coincide with base plate edge, set width to outer and border thickness to thickness
+    ann.style.width = outer + 'px';
+    ann.style.height = outer + 'px';
+    ann.style.border = `${thickness}px solid limegreen`;
+    ann.style.boxSizing = 'border-box';
+    ann.style.opacity = 0.9;
+  } else {
+    // scale < 1: draw an inward red ring whose outer edge is baseDia and inner edge is scaledDia
+    const outer = baseDia;
+    const thickness = Math.max(4, (baseDia - scaledDia) / 2);
+    ann.style.width = outer + 'px';
+    ann.style.height = outer + 'px';
+    // draw border that visually occupies the inward space by using border with negative offset via outline trick is not available,
+    // but centering the border over the outer circle makes inner edge at scaled diameter when border thickness = (outer - scaled)/2
+    ann.style.border = `${thickness}px solid tomato`;
+    ann.style.boxSizing = 'border-box';
+    ann.style.opacity = 0.95;
+  }
+
   annNode.appendChild(ann);
 }
 
@@ -326,10 +350,10 @@ function runCompare(targetOverlay, targetBase, annNode, captionEl, targetMap, ti
     if (el.dataset.onplate === '1') el.classList.add('hidden-onplate');
   });
 
-  // draw annulus
+  // draw annulus that starts at plate edge
   drawAnnulus(annNode, scale);
 
-  // apply uniform scale to scaledGroup
+  // apply uniform scale to scaledGroup (this scales plate overlay + on-plate items)
   const scaledGroup = targetOverlay._scaledGroup;
   if (scaledGroup) {
     scaledGroup.style.transition = 'transform 850ms cubic-bezier(.2,.9,.2,1)';
@@ -341,6 +365,7 @@ function runCompare(targetOverlay, targetBase, annNode, captionEl, targetMap, ti
     const actualCal = Math.round(totalCaloriesPayload());
     const targetCal = Math.round(totalCaloriesFromMap(targetMap || {}));
     const diffPct = targetCal === 0 ? (actualCal === 0 ? 0 : -100) : Math.round(((targetCal - actualCal) / Math.max(1, actualCal)) * 100);
+
     // simple per-id diff summary
     const agg = {};
     (payload.positions || []).forEach(p => { agg[p.id] = (agg[p.id]||0) + (p.grams || 0); });
@@ -372,7 +397,6 @@ function portionsToGramsMap(portions){
   const g = {};
   Object.keys(portions||{}).forEach(id => {
     const per = (id in CAL_PER_G) ? 100 : 100;
-    // recommended portions mapping in portions means count-of-portion; multiply by gramsPerPortion=100 for simplicity
     g[id] = (portions[id] || 0) * per;
   });
   return g;
