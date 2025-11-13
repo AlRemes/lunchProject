@@ -28,22 +28,14 @@
     overflow:visible;
     display:block;
   }
-  .placed-wrapper { transform-origin:50% 50%; pointer-events:auto; }
-  .placed-wrapper img { display:block; width:100%; height:100%; object-fit:contain; }
-  .side-placed-wrapper { position:absolute; }
-  .fraction-badge {
-    position:absolute;
-    right:4px;
-    bottom:4px;
-    background:rgba(0,0,0,0.65);
-    color:#fff;
-    font-size:11px;
-    padding:2px 6px;
-    border-radius:9px;
-    pointer-events:none;
-    box-shadow:0 1px 3px rgba(0,0,0,0.25);
-    font-weight:600;
-  }
+  /* ensure wrapper and badge layout is stable and badge is small and bottom-right */
+  .placed-wrapper { transform-origin:50% 50%; pointer-events:auto; position:absolute; }
+  .placed-wrapper img { display:block; width:100%; height:100%; object-fit:contain; pointer-events:none; }
+  .fraction-badge { position:absolute; right:6px; bottom:6px; background:rgba(0,0,0,0.65); color:#fff; font-size:11px; padding:2px 6px; border-radius:9px; pointer-events:none; box-shadow:0 1px 3px rgba(0,0,0,0.25); font-weight:600; z-index:5; }
+  /* hide any textual title hovering artifact inside images */
+  .placed-wrapper img[title] { title: none; }
+  /* class applied for clipped-half images to create diagonal half-mask */
+  .clip-half { -webkit-clip-path: polygon(0 0, 100% 0, 0 100%); clip-path: polygon(0 0, 100% 0, 0 100%); }
   #controls{margin-top:12px}
   button{padding:8px 12px;border-radius:6px;border:1px solid #bbb;background:#fff;cursor:pointer}
   #summary{margin-top:10px}
@@ -243,47 +235,73 @@ const plateEl = document.getElementById('plate');
 const plateCard = document.getElementById('platecard');
 
 function renderPlate(){
+  // clear previous
   plateEl.innerHTML = '';
   Array.from(plateCard.querySelectorAll('.side-placed-wrapper')).forEach(n=>n.remove());
-  plateEl.style.width = PLATE_DIAMETER + 'px'; plateEl.style.height = PLATE_DIAMETER + 'px';
+  plateEl.style.width = PLATE_DIAMETER + 'px';
+  plateEl.style.height = PLATE_DIAMETER + 'px';
   const slots = computeSideSlots();
-  // remove any stray wrappers (safety)
-  Array.from(document.querySelectorAll('.placed-wrapper')).forEach(n=>{
-    if (!n.dataset || !n.dataset.instanceIdx) return;
-  });
+
   state.placedInstances.forEach((inst, idx) => {
     const catalogItem = catalogFind(inst.id) || {};
     // wrapper positioned at anchor point to avoid clipping and stray badges
     const wrapper = document.createElement('div');
     wrapper.className = 'placed-wrapper';
     wrapper.dataset.instanceIdx = idx;
-    wrapper.style.position = 'absolute';
     wrapper.style.width = inst.sizePx + 'px';
     wrapper.style.height = inst.sizePx + 'px';
-    wrapper.style.transform = `translate(-50%,-50%) rotate(${inst.rotationDeg||0}deg)`;
     wrapper.style.zIndex = 10 + idx;
-    // inner image scales inside wrapper (prevents clipping)
+    wrapper.style.transform = `translate(-50%,-50%) rotate(${inst.rotationDeg||0}deg)`;
+    // ensure pointer events for wrapper but not for inner image
+    wrapper.style.pointerEvents = 'auto';
+
+    // inner image (we won't scale the wrapper; we handle quarter as scaled image
     const innerImg = document.createElement('img');
     innerImg.src = catalogItem.img || ('images/' + inst.id + '.svg');
     innerImg.alt = inst.label || inst.id;
-    innerImg.style.width = '100%';
-    innerImg.style.height = '100%';
-    innerImg.style.objectFit = 'contain';
-    const fraction = inst.grams / inst.gramsPerPortion;
-    const imgScale = Math.max(0.25, Math.min(1.8, fraction));
-    innerImg.style.transform = `scale(${imgScale})`;
-    innerImg.style.transformOrigin = '50% 50%';
-    // removal on click
+    // remove any title attribute to avoid numbers showing on hover or on some browsers
+    innerImg.removeAttribute('title');
+
+    // classes and base styles handled by CSS; ensure no inline width/height conflict
+    innerImg.classList.remove('clip-half');
+
+    // determine fraction behavior: half -> clipped diagonal; quarter -> scaled down; full -> normal
+    const fraction = inst.fraction || (inst.grams && inst.gramsPerPortion ? (inst.grams / inst.gramsPerPortion) : 1);
+    if (Math.abs(fraction - 1) < 0.001) {
+      // full: show image normally (no scaling)
+      innerImg.style.transform = 'scale(1)';
+      innerImg.style.opacity = '1';
+      innerImg.classList.remove('clip-half');
+    } else if (Math.abs(fraction - 0.5) < 0.001) {
+      // half: apply diagonal clipping mask and show at full size (visual half without shrinking)
+      innerImg.style.transform = 'scale(1)';
+      innerImg.style.opacity = '1';
+      innerImg.classList.add('clip-half');
+    } else {
+      // quarter or other fractional: scale the img inside wrapper to indicate smaller portion
+      const imgScale = Math.max(0.25, Math.min(1.0, fraction));
+      innerImg.style.transform = `scale(${imgScale})`;
+      innerImg.style.opacity = '1';
+      innerImg.classList.remove('clip-half');
+    }
+
+    // click to remove instance
     wrapper.addEventListener('click', ()=> { state.placedInstances.splice(idx,1); renderPlate(); updateSummary(); });
+
     wrapper.appendChild(innerImg);
-    // fraction badge inside wrapper
-    const fracLabel = Math.abs(inst.fraction - 1) < 0.001 ? null : (inst.fraction === 0.5 ? '1/2' : (inst.fraction === 0.25 ? '1/4' : (inst.fraction.toString())));
-    if (fracLabel) {
+
+    // fraction badge: do NOT show for full portion (fraction==1). If desired, we can hide entirely.
+    // The user asked to hide numbers on plate; so we will NOT append any badge into the plate.
+    // If you still want a tiny indicator, uncomment the block below.
+    /*
+    if (fraction !== 1) {
       const badge = document.createElement('div');
       badge.className = 'fraction-badge';
-      badge.textContent = fracLabel;
+      badge.textContent = (fraction === 0.5 ? '1/2' : (fraction === 0.25 ? '1/4' : fraction.toString()));
       wrapper.appendChild(badge);
     }
+    */
+
     // append to correct parent and position
     if (inst.placement === 'onplate') {
       wrapper.style.left = inst.x + 'px';
@@ -300,6 +318,7 @@ function renderPlate(){
       plateCard.appendChild(wrapper);
     }
   });
+
   updateSummary();
 }
 
@@ -374,3 +393,4 @@ updateSummary();
 
 </body>
 </html>
+
