@@ -35,7 +35,8 @@
   /* hide any textual title hovering artifact inside images */
   .placed-wrapper img[title] { title: none; }
   /* class applied for clipped-half images to create diagonal half-mask */
-  .clip-half { -webkit-clip-path: polygon(0 0, 100% 0, 0 100%); clip-path: polygon(0 0, 100% 0, 0 100%); }
+  /* clipped half: show top-left-to-bottom-right diagonal half (keep visible top-left triangle) */
+  .clip-half { -webkit-clip-path: polygon(0 0, 100% 100%, 0 100%); clip-path: polygon(0 0, 100% 100%, 0 100%); }
   #controls{margin-top:12px}
   button{padding:8px 12px;border-radius:6px;border:1px solid #bbb;background:#fff;cursor:pointer}
   #summary{margin-top:10px}
@@ -97,12 +98,14 @@ const SIZE_MAP = {
 
 const state = { placedInstances: [] }; // stores grams-aware placed entries
 
-// CATALOG with gramsPerPortion
+// CATALOG with gramsPerPortion and additional bread variants
 const FOOD_CATALOG = [
   {id:'potato', label:'Potato', kcal:160, gramsPerPortion:150, img:'images/potato.svg', placement:'onplate'},
   {id:'sausage', label:'Sausage', kcal:250, gramsPerPortion:75, img:'images/sausage.svg', placement:'onplate'},
   {id:'carrot', label:'Carrot', kcal:25, gramsPerPortion:75, img:'images/carrot.svg', placement:'onplate'},
-  {id:'bread', label:'Bread slice', kcal:80, gramsPerPortion:40, img:'images/slice-of-bread.svg', placement:'side'},
+  {id:'bread', label:'Bread slice', kcal:80, gramsPerPortion:40, img:'images/slice-of-bread.svg', placement:'side', hasOptions:true},
+  {id:'bread_butter', label:'Bread with butter', kcal:80 + 102, gramsPerPortion:40, img:'images/bread-with-butter.svg', placement:'side', hidden:true},
+  {id:'bread_butter_cheese', label:'Bread with butter and cheese', kcal:80 + 102 + 110, gramsPerPortion:40, img:'images/cheese-bread.svg', placement:'side', hidden:true},
   {id:'apple', label:'Apple', kcal:95, gramsPerPortion:150, img:'images/apple.svg', placement:'side'},
   {id:'water', label:'Water (glass)', kcal:0, gramsPerPortion:200, img:'images/glass-of-water.svg', placement:'side'},
   {id:'milk', label:'Milk (carton)', kcal:150, gramsPerPortion:250, img:'images/milk-carton.svg', placement:'side'}
@@ -134,7 +137,11 @@ function makeFoodTile(item) {
   el.className = 'food';
   el.dataset.id = item.id;
   el.innerHTML = `<img src="${item.img}" alt="${item.label}"><div><strong>${item.label}</strong><div class="small">${item.kcal} kcal/portion</div></div>`;
-  const fractionalAllowed = !(item.id === 'water' || item.id === 'milk');
+
+  // determine which items allow fractional portions
+  const fractionalAllowed = !(item.id === 'water' || item.id === 'milk' || item.id === 'bread');
+
+  // portion controls
   const pc = document.createElement('div'); pc.className = 'portion-controls';
   const btn1 = document.createElement('button'); btn1.textContent = '1'; btn1.title='Add full portion';
   pc.appendChild(btn1);
@@ -147,6 +154,65 @@ function makeFoodTile(item) {
   }
   btn1.addEventListener('click', (e) => { e.stopPropagation(); addInstanceToPlate(item.id, 1); });
   el.appendChild(pc);
+
+  // Bread-specific options: add butter / add cheese (upgrade behavior)
+  if (item.hasOptions) {
+    const opts = document.createElement('div');
+    opts.style.marginTop = '6px';
+    opts.innerHTML = `
+      <button data-action="addButter" style="padding:4px 8px;border-radius:4px;margin-right:6px">Add butter</button>
+      <button data-action="addCheese" style="padding:4px 8px;border-radius:4px;margin-right:6px">Add cheese</button>
+    `;
+    el.appendChild(opts);
+
+    const btnAddButter = opts.querySelector('button[data-action="addButter"]');
+    const btnAddCheese = opts.querySelector('button[data-action="addCheese"]');
+
+    // add butter: if a plain bread side instance exists, upgrade it to bread_butter preserving slot; otherwise add a new bread_butter
+    btnAddButter.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      const idxPlain = state.placedInstances.findIndex(p => p.id === 'bread' && p.placement === 'side');
+      if(idxPlain >= 0) {
+        const prev = state.placedInstances[idxPlain];
+        const slot = prev.sideSlot;
+        state.placedInstances.splice(idxPlain, 1, {
+          id: 'bread_butter',
+          label: catalogFind('bread_butter').label,
+          kcalPerPortion: catalogFind('bread_butter').kcal,
+          gramsPerPortion: catalogFind('bread_butter').gramsPerPortion || prev.gramsPerPortion || 40,
+          grams: prev.grams,
+          x: prev.x, y: prev.y,
+          sizePx: SIZE_MAP['bread_butter'] || prev.sizePx,
+          rotationDeg: 0, placement: 'side', sideSlot: slot, fraction: prev.fraction || 1
+        });
+      } else {
+        addInstanceToPlate('bread_butter', 1);
+      }
+      renderPlate(); updateSummary();
+    });
+
+    // add cheese: upgrade bread_butter -> bread_butter_cheese
+    btnAddCheese.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      const idxButter = state.placedInstances.findIndex(p => p.id === 'bread_butter' && p.placement === 'side');
+      if(idxButter >= 0) {
+        const prev = state.placedInstances[idxButter];
+        const slot = prev.sideSlot;
+        state.placedInstances.splice(idxButter, 1, {
+          id: 'bread_butter_cheese',
+          label: catalogFind('bread_butter_cheese').label,
+          kcalPerPortion: catalogFind('bread_butter_cheese').kcal,
+          gramsPerPortion: catalogFind('bread_butter_cheese').gramsPerPortion || prev.gramsPerPortion || 40,
+          grams: prev.grams,
+          x: prev.x, y: prev.y,
+          sizePx: SIZE_MAP['bread_butter_cheese'] || prev.sizePx,
+          rotationDeg: 0, placement: 'side', sideSlot: slot, fraction: prev.fraction || 1
+        });
+      }
+      renderPlate(); updateSummary();
+    });
+  }
+
   // click main tile adds full portion
   el.addEventListener('click', (ev)=>{ addInstanceToPlate(item.id, 1); });
   return el;
@@ -393,4 +459,5 @@ updateSummary();
 
 </body>
 </html>
+
 
