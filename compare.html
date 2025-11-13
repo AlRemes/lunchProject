@@ -59,6 +59,119 @@ async function fetchPastList() {
   return await res.json();
 }
 
+/* ------------------ OWID reality fetch + mapping ------------------
+   Usage:
+     // compare country FIN
+     fetchAndCompareReality('FIN').catch(err=>console.error(err));
+     // or populate a country selector and call fetchAndCompareReality(code)
+------------------------------------------------------------------ */
+
+const OWID_COUNTRY_MAP = { FIN: 'Finland', GBR: 'United Kingdom', TZA: 'Tanzania', 'Eastern Asia (FAO)': 'Eastern Asia (FAO)' };
+// adjust/add other mappings as needed
+
+// kcal per portion in your app (tweak if your SIZE_MAP changed)
+const KCAL_PER_ITEM = { bread: 80, potato: 160, sausage: 250, milk: 150, cheese: 110, apple: 95, carrot: 25, water: 0 };
+
+// A simple default allocation of lunch kcal into items (fractions of the lunch kcal).
+// Tweak these fractions to better reflect typical diets for the country; they must sum to ~1.0 (or less; remaining goes to 'other').
+const DEFAULT_LUNCH_ALLOCATION = {
+  bread: 0.28,    // cereals / grains
+  potato: 0.12,   // roots & tubers
+  sausage: 0.25,  // meat / protein
+  milk: 0.15,     // dairy
+  fruitsveg: 0.18 // fruits + vegetables (we'll split into apple/carrot below)
+};
+
+function parseCSV(text) {
+  // Minimal CSV parser: returns array of rows (array of cells)
+  return text.trim().split('\n').map(r => {
+    // rudimentary handling for quoted cells
+    const cells = [];
+    let cur = '', inQ = false;
+    for (let i=0;i<r.length;i++){
+      const ch = r[i];
+      if (ch === '"' ) { inQ = !inQ; continue; }
+      if (ch === ',' && !inQ) { cells.push(cur); cur=''; continue; }
+      cur += ch;
+    }
+    cells.push(cur);
+    return cells;
+  });
+}
+
+async function fetchOWIDTotalKcalForCountry(entityName) {
+  // fetch CSV for the chart; include entityName via country param (OWID uses entity names)
+  const url = 'https://ourworldindata.org/grapher/daily-per-capita-caloric-supply.csv?country=' + encodeURIComponent(entityName);
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('OWID fetch failed: ' + res.status);
+  const txt = await res.text();
+  const rows = parseCSV(txt);
+  const header = rows.shift();
+  // header likely contains: "Year","Entity","Code","Daily supply of calories per person (kcal)"
+  const idxEntity = header.findIndex(h => /entity|country/i.test(h));
+  const idxYear = header.findIndex(h => /year/i.test(h));
+  const idxValue = header.findIndex(h => /calor/i.test(h));
+  if (idxEntity < 0 || idxYear < 0 || idxValue < 0) {
+    // fallback: try typical positions
+    // throw an error to signal unexpected CSV layout
+    throw new Error('Unexpected OWID CSV format; header: ' + header.join('|'));
+  }
+  // collect year->value for the requested entity
+  const vals = {};
+  rows.forEach(cells => {
+    const ent = cells[idxEntity];
+    if (ent !== entityName) return;
+    const year = cells[idxYear];
+    const v = parseFloat(cells[idxValue]) || 0;
+    vals[year] = v;
+  });
+  const years = Object.keys(vals).map(y=>Number(y)).sort((a,b)=>b-a);
+  if (!years.length) return null;
+  const latestYear = years[0];
+  return { year: latestYear, kcalPerDay: vals[String(latestYear)] };
+}
+
+function mapLunchKcalToCounts(lunchKcal, allocation = DEFAULT_LUNCH_ALLOCATION) {
+  // allocate lunch kcal to items and turn into integer portion counts
+  const counts = {};
+  const fruitsvegKcal = (allocation.fruitsveg || 0) * lunchKcal;
+  const fvSplit = 0.5; // split fruitsveg kcal half to fruits (apple), half to veg (carrot)
+  const byItemKcal = {
+    bread: (allocation.bread || 0) * lunchKcal,
+    potato: (allocation.potato || 0) * lunchKcal,
+    sausage: (allocation.sausage || 0) * lunchKcal,
+    milk: (allocation.milk || 0) * lunchKcal,
+    apple: fruitsvegKcal * fvSplit,
+    carrot: fruitsvegKcal * (1 - fvSplit),
+    water: 0
+  };
+  Object.entries(byItemKcal).forEach(([item, kcal]) => {
+    const per = KCAL_PER_ITEM[item] || 100;
+    const raw = (kcal / per);
+    // make small non-zero portions show as 1 rather than 0 when kcal>0
+    counts[item] = (kcal > 0 && raw > 0 && raw < 0.5) ? 1 : Math.round(raw);
+    if (!isFinite(counts[item]) || counts[item] < 0) counts[item] = 0;
+  });
+  return counts;
+}
+
+async function fetchAndCompareReality(countryCode = 'FIN') {
+  try {
+    const entity = OWID_COUNTRY_MAP[countryCode] || countryCode;
+    const result = await fetchOWIDTotalKcalForCountry(entity);
+    if (!result) { alert('No OWID data for ' + entity); return; }
+    const daily = result.kcalPerDay;
+    // estimate lunch as one third of daily supply
+    const lunch = daily / 3;
+    const counts = mapLunchKcalToCounts(lunch);
+    const title = `Reality (approx) ${entity} ${result.year}: ${Math.round(daily)} kcal/day, lunch ≈ ${Math.round(lunch)} kcal`;
+    animateComparison(counts, title);
+  } catch (err) {
+    console.error('fetchAndCompareReality error', err);
+    alert('Failed to fetch reality data: ' + (err.message || err));
+  }
+}
+
 // load initial session: from URL sessionId or fallback sessionStorage
 async function loadBase() {
   const sid = qs('sessionId');
@@ -100,6 +213,11 @@ function renderBasePlate(payload) {
     basePayload._anchorMap[p.id].push(p);
   });
 }
+document.getElementById('cmpRealityBtn').addEventListener('click', () => {
+  const sel = document.getElementById('pastSelect'); // reuse or add a country select
+  const code = sel && sel.value ? sel.value : 'FIN';
+  fetchAndCompareReality(code);
+});
 
 // create overlay items (one DOM element per anchor position) and return array
 function createOverlayElements() {
@@ -124,10 +242,17 @@ function createOverlayElements() {
   return overlayElements;
 }
 
+// Finland-aligned recommended lunch (approximation based on Ruokavirasto guidance, lunch ~= 1/3 daily)
+
+
 // animate overlay to represent targetCounts (object id->count). Items are anchored, they DO NOT move.
 // scaling: find anchorCount per id (how many anchors exist for that id), then compute target total instances for id,
 // compute per-anchor scale = sqrt(targetInstances / anchorCount) or 0 if target is 0.
 function animateComparison(targetCounts, title) {
+  document.querySelectorAll('.baseItem').forEach(el => {
+    el.style.filter = 'none';
+    el.style.opacity = '1';
+  });
   const caption = document.getElementById('caption');
   caption.textContent = title || '';
   const anchorsById = {};
@@ -138,6 +263,10 @@ function animateComparison(targetCounts, title) {
 
   // compute target instances count per id (rounding rules: use provided count or fallback to Math.round(avg))
   // targetCounts is an object id->count (numbers)
+  document.querySelectorAll('.baseItem').forEach(el => {
+    el.style.filter = 'grayscale(1)';
+    el.style.opacity = '0.45';
+  });
   const anchorCountById = {};
   Object.keys(anchorsById).forEach(id=> anchorCountById[id] = anchorsById[id].length);
 
@@ -181,6 +310,19 @@ function animateComparison(targetCounts, title) {
   }, 900);
 
 }
+const recommendedCountsFinlandLunch = {
+  // vegetables & fruits (split veg 60% veg, 40% fruit of the lunch veg+fruit budget)
+  carrot: 2,     // ~2 carrots (vegetable portions)
+  apple: 1,      // 1 medium apple (fruit portion)
+  // staple: one or two starchy portions (potato or bread)
+  potato: 1,     // 1 medium potato OR
+  bread: 1,      // 1 slice (either/or; counts can combine)
+  // protein and dairy
+  sausage: 1,    // 1 small protein portion (prefer plant/lean proteins in reality)
+  milk: 1,       // 1 small milk/dairy portion
+  // extras / hydration
+  water: 1
+};
 
 // helpers to convert recommended/session payloads into id->count maps
 function itemsArrayToCounts(items) {
@@ -192,19 +334,10 @@ function itemsArrayToCounts(items) {
 // UI wiring
 document.getElementById('backBtn').addEventListener('click', ()=> { window.location.href = 'index.html'; });
 
-document.getElementById('cmpRecommendedBtn').addEventListener('click', async ()=> {
-  try {
-    const summary = await fetchRecommended();
-    // build counts map using avgPerSubmission or totalCount (rounded)
-    const counts = {};
-    (summary.items||[]).forEach(it => {
-      const c = Math.max(0, Math.round(it.avgPerSubmission || it.totalCount || 0));
-      counts[it.id] = c;
-    });
-    animateComparison(counts, 'Recommended vs Estimate');
-  } catch (err) {
-    console.error(err); alert('Failed to fetch recommended');
-  }
+document.getElementById('cmpRecommendedBtn').addEventListener('click', async () => {
+  // pick region: use FIN mapping for Finland; in a full app you'd switch by selected country
+  const recommended = recommendedCountsFinlandLunch;
+  animateComparison(recommended, 'Recommended (Finland) vs Estimate');
 });
 
 document.getElementById('pastSelect').addEventListener('change', ()=>{/* nothing: wait for manual compare */});
