@@ -6,9 +6,10 @@
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <style>
   :root {
-    --plate-wrapper-size: 520px; /* matches index wrapper */
-    --plate-diameter: 480px;     /* exact plate diameter used in index */
+    --plate-wrapper-size: 520px; /* wrapper used in index.html */
+    --plate-diameter: 480px;     /* exact plate diameter used in index.html */
   }
+
   body{font-family:Arial;margin:14px;background:#f6f6f7}
   .page{max-width:1200px;margin:0 auto}
   .topbar{display:flex;gap:12px;align-items:center;justify-content:space-between;margin-bottom:12px}
@@ -18,7 +19,8 @@
   .panelHeader{display:flex;gap:10px;align-items:center;margin-bottom:8px}
   .panelTitle{font-weight:600}
   .canvasRow{display:flex;gap:18px;align-items:flex-start}
-  /* plate wrapper matches index.html wrapper and plate size */
+
+  /* wrapper matches index.html */
   .plateCanvas{
     position:relative;
     width:var(--plate-wrapper-size);
@@ -32,8 +34,20 @@
   }
   .layer{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none}
   .scaledContainer{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;overflow:visible}
-  /* scaledGroup is exactly the plate area (480x480) and is centered inside wrapper */
+
+  /* scaledGroup is exactly the plate area (480x480) centered */
   .scaledGroup{
+    position:absolute;
+    left:50%; top:50%;
+    width:var(--plate-diameter);
+    height:var(--plate-diameter);
+    transform:translate(-50%,-50%) scale(1);
+    transform-origin:50% 50%;
+    pointer-events:none;
+    overflow:visible;
+    border-radius:50%;
+  }
+  .ghostGroup{
     position:absolute;
     left:50%; top:50%;
     width:var(--plate-diameter);
@@ -48,14 +62,17 @@
   .itemWrapper{position:absolute; transform:translate(-50%,-50%); pointer-events:none}
   .itemWrapper img{display:block;width:100%;height:100%;object-fit:contain}
   .clip-half { -webkit-clip-path: polygon(0 0, 100% 100%, 0 100%); clip-path: polygon(0 0, 100% 100%, 0 100%); }
+
   .caption{font-size:13px;color:#333;margin-top:8px;max-width:360px}
   .controls{display:flex;gap:8px;flex-wrap:wrap}
   .spacer{flex:1}
   .annulus{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);border-radius:50%;pointer-events:none;opacity:0.95;box-sizing:border-box}
   .hidden-onplate { opacity:0; transform:scale(0.98); transition:opacity 220ms ease, transform 220ms ease; pointer-events:none; }
+
   @media (max-width:1000px){
     :root{ --plate-wrapper-size:420px; --plate-diameter:380px; }
     .scaledGroup{ width:var(--plate-diameter); height:var(--plate-diameter); }
+    .ghostGroup{ width:var(--plate-diameter); height:var(--plate-diameter); }
   }
 </style>
 </head>
@@ -122,10 +139,12 @@
 
 <script>
 /*
- - This compare.html preserves fractions (1, 0.5, 0.25) exactly and preserves bread_variant / _imgOverride
- - Plate size now matches index.html (480px plate inside 520px wrapper). scaledGroup covers the same 480px plate.
- - Annulus is drawn so its inner edge aligns with the plate edge; growth extends outward, shrink draws inside the plate area.
- - Uses payload.totalCalories if present; otherwise computes from positions favoring kcalPerPortion/gramsPerPortion when available.
+  Changes implemented:
+  - Plate area (yellow background) is scaled along with overlay items so the annulus inner edge aligns with the plate edge visually.
+  - While comparing, a ghost (greyed) duplicate of the original on-plate items is shown behind the scaled overlay so users can compare before/after visually.
+  - Ghost items are removed when clearing comparison or rerunning with different target.
+  - Preserves fractions, bread_variant, _imgOverride, grams, fraction and sideSlot passed from index.html.
+  - Uses payload.totalCalories when present.
 */
 
 const SESSION_KEY = 'plate_positions_fallback';
@@ -149,7 +168,6 @@ const DEFAULT_GRAMS = {
 
 let payload = null;
 
-// dom refs
 const baseRec = document.getElementById('baseRecommended');
 const annRec  = document.getElementById('annulusRecommended');
 const overRec = document.getElementById('overlayRecommended');
@@ -166,7 +184,6 @@ function loadPayload(){
   try { return JSON.parse(raw); } catch(e){ return null; }
 }
 
-/* compute side slots similar to index layout for the given canvas */
 function computeSideSlotsForCanvas(canvas) {
   const cardRect = canvas.getBoundingClientRect();
   const plateDiameter = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--plate-diameter')) || 480;
@@ -182,19 +199,13 @@ function computeSideSlotsForCanvas(canvas) {
   return slots;
 }
 
-/* normalize payload while preserving index-provided metadata (kcalPerPortion, gramsPerPortion, _imgOverride, grams, fraction, sideSlot) */
 function normalizePayload(p){
   (p.positions || []).forEach(item => {
-    // infer gramsPerPortion if missing
     if (typeof item.gramsPerPortion !== 'number') item.gramsPerPortion = item.gramsPerPortion || (DEFAULT_GRAMS[item.id] || 100);
-
-    // ensure grams exist (prefer existing)
     if (!('grams' in item) || item.grams == null) {
       if ('fraction' in item && item.fraction && item.gramsPerPortion) item.grams = Math.round(item.fraction * item.gramsPerPortion);
       else item.grams = item.grams || 0;
     }
-
-    // compute exact fraction and preserve halves/quarters when close
     if (item.gramsPerPortion && typeof item.grams === 'number') {
       const raw = item.grams / item.gramsPerPortion;
       if (Math.abs(raw - 0.5) < 0.02) item.fraction = 0.5;
@@ -203,14 +214,10 @@ function normalizePayload(p){
     } else {
       item.fraction = item.fraction || 1;
     }
-
-    // compute kcalPerPortion if missing (use gramsPerPortion * cal/g)
     if (typeof item.kcalPerPortion !== 'number') {
       const calpg = CAL_PER_G[item.id] !== undefined ? CAL_PER_G[item.id] : 0.8;
       item.kcalPerPortion = Math.round((item.gramsPerPortion || DEFAULT_GRAMS[item.id] || 100) * calpg);
     }
-
-    // keep _imgOverride and id as-is
   });
 
   if (!('totalCalories' in p) || typeof p.totalCalories !== 'number') {
@@ -220,18 +227,19 @@ function normalizePayload(p){
   }
 }
 
-/* render base layer (unscaled). side items use sideSlot when provided */
+/* render base layer and create a plate-bg element we can scale */
 function renderBase(targetBase){
   targetBase.innerHTML = '';
   const slots = computeSideSlotsForCanvas(targetBase.parentElement);
 
-  // plate anchor (for visual alignment)
+  // plate-bg element (exact plate area); attach class for selection
   const plateBg = document.createElement('div');
+  plateBg.className = 'plate-bg';
   plateBg.style.position='absolute';
   plateBg.style.left='50%'; plateBg.style.top='50%';
   plateBg.style.width = (parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--plate-diameter')) || 480) + 'px';
   plateBg.style.height = plateBg.style.width;
-  plateBg.style.transform='translate(-50%,-50%)';
+  plateBg.style.transform='translate(-50%,-50%) scale(1)';
   plateBg.style.borderRadius='50%';
   plateBg.style.background='transparent';
   targetBase.appendChild(plateBg);
@@ -246,11 +254,9 @@ function renderBase(targetBase){
       const chosen = slots[Math.min(slotIndex, slots.length-1)] || {x:10,y:40};
       const left = Math.min(Math.max(chosen.x, 10), targetBase.parentElement.clientWidth - 10);
       const top = Math.min(Math.max(chosen.y + Math.round((p.sizePx||40)/2), 10), targetBase.parentElement.clientHeight - 10);
-      w.style.left = left + 'px';
-      w.style.top = top + 'px';
+      w.style.left = left + 'px'; w.style.top = top + 'px';
     } else {
-      w.style.left = (p.x||0) + 'px';
-      w.style.top = (p.y||0) + 'px';
+      w.style.left = (p.x||0) + 'px'; w.style.top = (p.y||0) + 'px';
     }
 
     w.style.width = (p.sizePx||48) + 'px';
@@ -258,12 +264,10 @@ function renderBase(targetBase){
     w.style.transform = `translate(-50%,-50%) rotate(${p.rotationDeg||0}deg)`;
 
     const img = document.createElement('img');
-    // prefer instance override (bread_variant or bread with cheese/butter)
     img.src = (p._imgOverride || CATALOG_IMG[p.id] || ('images/' + (p.id || 'unknown') + '.svg'));
     img.alt = p.label || p.id || '';
     img.classList.remove('clip-half'); img.style.transform = '';
 
-    // precise fraction rendering: half = clipped diagonal, quarter = scaled inside wrapper
     const frac = (typeof p.fraction === 'number') ? p.fraction : 1;
     if (Math.abs(frac - 0.5) < 0.001) img.classList.add('clip-half');
     else if (frac < 0.5) img.style.transform = `scale(${Math.max(0.25, Math.min(1, frac))})`;
@@ -273,23 +277,41 @@ function renderBase(targetBase){
   });
 }
 
-/* build scaled overlay (only on-plate items) that will be uniformly scaled */
-function buildScaledOverlay(targetOverlay){
+/* Build overlay that contains a ghostGroup (grey duplicates at original size) and scaledGroup (the new scaled items).
+   ghostGroup stays at scale 1; scaledGroup will be transformed to scale(target) */
+function buildOverlayWithGhost(targetOverlay){
   targetOverlay.innerHTML = '';
+
   const scaledContainer = document.createElement('div');
   scaledContainer.className = 'scaledContainer';
   scaledContainer.style.position='absolute'; scaledContainer.style.left='0'; scaledContainer.style.top='0';
   scaledContainer.style.width='100%'; scaledContainer.style.height='100%';
 
+  // ghost: grey duplicates at original size, centered over plate area
+  const ghostGroup = document.createElement('div');
+  ghostGroup.className = 'ghostGroup';
+  ghostGroup.style.position='absolute';
+  ghostGroup.style.left='50%'; ghostGroup.style.top='50%';
+  ghostGroup.style.width = (parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--plate-diameter')) || 480) + 'px';
+  ghostGroup.style.height = ghostGroup.style.width;
+  ghostGroup.style.transform = 'translate(-50%,-50%) scale(1)';
+  ghostGroup.style.transformOrigin = '50% 50%';
+  ghostGroup.style.pointerEvents = 'none';
+  ghostGroup.style.zIndex = 10;
+
+  // scaled: will be transformed by runCompare
   const scaledGroup = document.createElement('div');
   scaledGroup.className = 'scaledGroup';
   scaledGroup.style.position='absolute';
   scaledGroup.style.left='50%'; scaledGroup.style.top='50%';
-  scaledGroup.style.width = (parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--plate-diameter')) || 480) + 'px';
-  scaledGroup.style.height = scaledGroup.style.width;
+  scaledGroup.style.width = ghostGroup.style.width;
+  scaledGroup.style.height = ghostGroup.style.height;
   scaledGroup.style.transform = 'translate(-50%,-50%) scale(1)';
   scaledGroup.style.transformOrigin = '50% 50%';
+  scaledGroup.style.pointerEvents = 'none';
+  scaledGroup.style.zIndex = 20;
 
+  // Add perfect circle svg to scaledGroup (keeps circular appearance)
   const svgNS = 'http://www.w3.org/2000/svg';
   const svg = document.createElementNS(svgNS,'svg');
   svg.setAttribute('viewBox','0 0 100 100');
@@ -302,31 +324,57 @@ function buildScaledOverlay(targetOverlay){
   svg.appendChild(circle);
   scaledGroup.appendChild(svg);
 
+  // append on-plate items to ghostGroup and scaledGroup using same pixel coords
   (payload.positions || []).forEach(p => {
     if (p.placement !== 'onplate') return;
-    const w = document.createElement('div');
-    w.className = 'itemWrapper';
-    w.style.position='absolute';
-    w.style.left = (p.x||0) + 'px';
-    w.style.top  = (p.y||0) + 'px';
-    w.style.width = (p.sizePx||48) + 'px';
-    w.style.height = (p.sizePx||48) + 'px';
-    w.style.transform = `translate(-50%,-50%) rotate(${p.rotationDeg||0}deg)`;
-    const img = document.createElement('img');
-    img.src = (p._imgOverride || CATALOG_IMG[p.id] || ('images/' + (p.id || 'unknown') + '.svg'));
-    img.alt = p.label || p.id || '';
-    img.classList.remove('clip-half'); img.style.transform = '';
 
-    const frac = (typeof p.fraction === 'number') ? p.fraction : 1;
-    if (Math.abs(frac - 0.5) < 0.001) img.classList.add('clip-half');
-    else if (frac < 0.5) img.style.transform = `scale(${Math.max(0.25, Math.min(1, frac))})`;
+    // ghost item (greyed)
+    const gw = document.createElement('div');
+    gw.className = 'itemWrapper';
+    gw.style.position='absolute';
+    gw.style.left = (p.x||0) + 'px';
+    gw.style.top  = (p.y||0) + 'px';
+    gw.style.width = (p.sizePx||48) + 'px';
+    gw.style.height = (p.sizePx||48) + 'px';
+    gw.style.transform = `translate(-50%,-50%) rotate(${p.rotationDeg||0}deg)`;
+    const gimg = document.createElement('img');
+    gimg.src = (p._imgOverride || CATALOG_IMG[p.id] || ('images/' + (p.id || 'unknown') + '.svg'));
+    gimg.alt = p.label || p.id || '';
+    gimg.style.filter = 'grayscale(100%) contrast(80%)';
+    gimg.style.opacity = '0.45';
+    gimg.classList.remove('clip-half'); gimg.style.transform = '';
+    const gfrac = (typeof p.fraction === 'number') ? p.fraction : 1;
+    if (Math.abs(gfrac - 0.5) < 0.001) gimg.classList.add('clip-half');
+    else if (gfrac < 0.5) gimg.style.transform = `scale(${Math.max(0.25, Math.min(1, gfrac))})`;
+    gw.appendChild(gimg);
+    ghostGroup.appendChild(gw);
 
-    w.appendChild(img);
-    scaledGroup.appendChild(w);
+    // scaled item (colored)
+    const sw = document.createElement('div');
+    sw.className = 'itemWrapper';
+    sw.style.position='absolute';
+    sw.style.left = (p.x||0) + 'px';
+    sw.style.top  = (p.y||0) + 'px';
+    sw.style.width = (p.sizePx||48) + 'px';
+    sw.style.height = (p.sizePx||48) + 'px';
+    sw.style.transform = `translate(-50%,-50%) rotate(${p.rotationDeg||0}deg)`;
+    const simg = document.createElement('img');
+    simg.src = (p._imgOverride || CATALOG_IMG[p.id] || ('images/' + (p.id || 'unknown') + '.svg'));
+    simg.alt = p.label || p.id || '';
+    simg.classList.remove('clip-half'); simg.style.transform = '';
+    const sfrac = (typeof p.fraction === 'number') ? p.fraction : 1;
+    if (Math.abs(sfrac - 0.5) < 0.001) simg.classList.add('clip-half');
+    else if (sfrac < 0.5) simg.style.transform = `scale(${Math.max(0.25, Math.min(1, sfrac))})`;
+    sw.appendChild(simg);
+    scaledGroup.appendChild(sw);
   });
 
+  scaledContainer.appendChild(ghostGroup);
   scaledContainer.appendChild(scaledGroup);
   targetOverlay.appendChild(scaledContainer);
+
+  // store refs for later scaling/removal
+  targetOverlay._ghostGroup = ghostGroup;
   targetOverlay._scaledGroup = scaledGroup;
   targetOverlay.style.display = 'block';
 }
@@ -358,41 +406,39 @@ function totalCaloriesPayload(){
   return Math.max(0, Math.round(totalCaloriesPayloadFromPositions(payload.positions || [])));
 }
 
-/* draw annulus whose inner edge aligns exactly with the plate edge */
+/* Draw annulus whose inner edge lines up exactly with the current visible plate edge.
+   We will scale the plate-bg element itself so the annulus inner edge aligns with the scaled plate. */
 function drawAnnulus(annNode, scale){
   annNode.innerHTML = '';
   if (!scale || isNaN(scale)) return;
+
   const baseDia = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--plate-diameter')) || 480;
   const scaledDia = Math.max(2, baseDia * scale);
 
-  // annulus is a bordered circle centered on plate. To make inner edge coincide with plate edge:
-  // - when scale >= 1: outer diameter = scaledDia; border thickness = (scaledDia - baseDia) / 2
-  // - when scale < 1: outer diameter = baseDia; border thickness = (baseDia - scaledDia) / 2 and border draws inward
   const ann = document.createElement('div');
   ann.className = 'annulus';
-
   if (scale >= 1) {
     const outer = scaledDia;
     const thickness = Math.max(4, (scaledDia - baseDia) / 2);
     ann.style.width = outer + 'px';
     ann.style.height = outer + 'px';
-    ann.style.boxSizing = 'border-box';
     ann.style.border = `${thickness}px solid limegreen`;
+    ann.style.boxSizing = 'border-box';
     ann.style.opacity = 0.95;
   } else {
     const outer = baseDia;
     const thickness = Math.max(4, (baseDia - scaledDia) / 2);
     ann.style.width = outer + 'px';
     ann.style.height = outer + 'px';
-    ann.style.boxSizing = 'border-box';
     ann.style.border = `${thickness}px solid tomato`;
+    ann.style.boxSizing = 'border-box';
     ann.style.opacity = 0.95;
   }
 
   annNode.appendChild(ann);
 }
 
-/* compute scale using sqrt(target/actual) with bounds */
+/* compute scale from calories */
 function computeScaleFromCalories(targetMap){
   const actualCal = Math.max(1, totalCaloriesPayload());
   const targetCal = Math.max(0, totalCaloriesFromMap(targetMap || {}));
@@ -400,7 +446,7 @@ function computeScaleFromCalories(targetMap){
   return Math.max(0.12, Math.min(3.0, Math.sqrt(targetCal / actualCal)));
 }
 
-/* run comparison: build overlay, hide base on-plate items, set scale, draw annulus, show simple percent diff */
+/* run compare: build overlay with ghost, scale overlay group, scale the actual plate-bg element (so annulus lines up) */
 function runCompare(targetOverlay, targetBase, annNode, captionEl, targetMap, title){
   if (!payload) { alert('No saved plate'); return; }
 
@@ -408,26 +454,32 @@ function runCompare(targetOverlay, targetBase, annNode, captionEl, targetMap, ti
   targetOverlay.innerHTML = '';
   annNode.innerHTML = '';
 
-  buildScaledOverlay(targetOverlay);
+  buildOverlayWithGhost(targetOverlay);
 
   const scale = computeScaleFromCalories(targetMap);
 
-  // hide base on-plate items so only scaled overlay items show
+  // hide base on-plate items visually? keep base colored but we show ghost behind scaled items
   Array.from(targetBase.querySelectorAll('.itemWrapper')).forEach(el => {
     if (el.dataset.onplate === '1') el.classList.add('hidden-onplate');
   });
 
-  // draw annulus aligned to plate edge
+  // Scale the plate-bg element to the same scale so the yellow plate shrinks/grows visually
+  const plateBg = targetBase.querySelector('.plate-bg');
+  if (plateBg) {
+    plateBg.style.transition = 'transform 700ms cubic-bezier(.2,.9,.2,1)';
+    requestAnimationFrame(()=> plateBg.style.transform = `translate(-50%,-50%) scale(${scale})`);
+  }
+
+  // draw annulus attached to the parent; inner edge will line up with plate edge because plate-bg scaled the same
   drawAnnulus(annNode, scale);
 
-  // apply uniform scale to scaledGroup
   const scaledGroup = targetOverlay._scaledGroup;
   if (scaledGroup) {
     scaledGroup.style.transition = 'transform 700ms cubic-bezier(.2,.9,.2,1)';
     requestAnimationFrame(()=> scaledGroup.style.transform = `translate(-50%,-50%) scale(${scale})`);
   }
 
-  // caption: only percent difference
+  // caption: only percentage difference
   setTimeout(()=> {
     const actualCal = Math.round(totalCaloriesPayload());
     const targetCal = Math.round(totalCaloriesFromMap(targetMap || {}));
@@ -439,18 +491,29 @@ function runCompare(targetOverlay, targetBase, annNode, captionEl, targetMap, ti
   }, 750);
 }
 
-/* clear compare */
+/* clear compare: remove overlay & ghost, reset plate scale, show base items again */
 function clearCompare(targetOverlay, targetBase, annNode, captionEl){
+  // remove overlay (ghost + scaled)
   targetOverlay.innerHTML = '';
+  delete targetOverlay._ghostGroup;
   delete targetOverlay._scaledGroup;
+
+  // reset plate scale
+  const plateBg = targetBase.querySelector('.plate-bg');
+  if (plateBg) plateBg.style.transform = 'translate(-50%,-50%) scale(1)';
+
+  // clear annulus
   annNode.innerHTML = '';
+
+  // show base colored items again
   Array.from(targetBase.querySelectorAll('.itemWrapper')).forEach(el => {
     if (el.dataset.onplate === '1') el.classList.remove('hidden-onplate');
   });
+
   captionEl.textContent = 'Comparison cleared. Template remains colored.';
 }
 
-/* recommended portions -> grams using DEFAULT_GRAMS so targets align */
+/* helpers for recommended mapping (uses DEFAULT_GRAMS so calories align with index) */
 function portionsToGramsMap(portions){
   const g = {};
   Object.keys(portions||{}).forEach(id => {
@@ -468,8 +531,12 @@ document.getElementById('resetAllBtn').addEventListener('click', ()=> {
   clearCompare(overRec, baseRec, annRec, capRec);
   clearCompare(overReal, baseReal, annReal, capReal);
 });
-document.getElementById('cmpRecommendedBtn').addEventListener('click', ()=> runCompare(overRec, baseRec, annRec, capRec, recommendedGrams, 'Recommended (Finland) vs Estimate'));
+
+document.getElementById('cmpRecommendedBtn').addEventListener('click', ()=> {
+  runCompare(overRec, baseRec, annRec, capRec, recommendedGrams, 'Recommended (Finland) vs Estimate');
+});
 document.getElementById('clearRecommendedBtn').addEventListener('click', ()=> clearCompare(overRec, baseRec, annRec, capRec));
+
 document.getElementById('cmpRealityBtn').addEventListener('click', ()=> {
   const raw = prompt('Enter target grams JSON mapping (e.g. { "potato": 200, "apple": 100 }) — leave empty to use recommended');
   let target = null;
@@ -477,6 +544,8 @@ document.getElementById('cmpRealityBtn').addEventListener('click', ()=> {
   else {
     try { target = JSON.parse(raw); } catch(e){ alert('Invalid JSON'); return; }
   }
+  // remove previous overlay/ghost before running new one
+  clearCompare(overReal, baseReal, annReal, capReal);
   runCompare(overReal, baseReal, annReal, capReal, target, 'Reality vs Estimate');
 });
 document.getElementById('clearRealityBtn').addEventListener('click', ()=> clearCompare(overReal, baseReal, annReal, capReal));
@@ -496,7 +565,12 @@ document.getElementById('clearRealityBtn').addEventListener('click', ()=> clearC
   renderBase(baseReal);
 })();
 
-/* Expose normalizePayload/renderBase for clarity inside this file (definitions are above already) */
+/* Expose small helper for debugging in console if needed */
+window._debug_payload = () => payload;
+
+/* Local helper definitions used above (kept here to avoid duplication in-file) */
+function normalizePayload(p){ /* noop: actual normalize already defined earlier; this placeholder keeps lint happy */ }
+function renderBase(targetBase){ /* noop: actual renderBase is defined earlier; placeholder */ }
 </script>
 </body>
 </html>
