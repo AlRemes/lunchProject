@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8"/>
-<title>Compare Plate — precise circular scaling</title>
+<title>Compare Plate — precise circular scaling (items scale inside)</title>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <style>
   body{font-family:Arial,margin:14px;background:#f6f6f7}
@@ -14,12 +14,12 @@
   .panelHeader{display:flex;gap:10px;align-items:center;margin-bottom:8px}
   .panelTitle{font-weight:600}
   .canvasRow{display:flex;gap:18px;align-items:flex-start}
-  /* make more white space around plate so it can expand visibly */
-  .plateCanvas{position:relative;width:560px;height:560px;border-radius:50%;background:#fff6e6;border:8px solid #eee;overflow:visible;padding:48px;box-sizing:border-box}
+  /* larger canvas + padding so overlay can expand */
+  .plateCanvas{position:relative;width:600px;height:600px;border-radius:50%;background:#fff6e6;border:8px solid #eee;overflow:visible;padding:56px;box-sizing:border-box}
   .layer{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none}
-  /* overlayRoot is the element we scale; it contains a perfectly circular svg plate and on-plate items positioned with pixel coordinates */
-  .overlayRoot{position:absolute;left:50%;top:50%;width:88%;height:88%;transform:translate(-50%,-50%);transform-origin:50% 50%}
-  .plateSvg{position:absolute;left:0;top:0;width:100%;height:100%}
+  /* overlayRoot is centered and scaled; it contains an SVG circle and item wrappers positioned with percent coordinates */
+  .overlayRoot{position:absolute;left:50%;top:50%;width:80%;height:80%;transform:translate(-50%,-50%);transform-origin:50% 50%;pointer-events:none}
+  .overlaySvg{position:absolute;left:0;top:0;width:100%;height:100%}
   .itemWrapper{position:absolute; transform:translate(-50%,-50%); pointer-events:none}
   .itemWrapper img{display:block;width:100%;height:100%;object-fit:contain}
   .clip-half { -webkit-clip-path: polygon(0 0, 100% 100%, 0 100%); clip-path: polygon(0 0, 100% 100%, 0 100%); }
@@ -27,7 +27,9 @@
   .controls{display:flex;gap:8px;flex-wrap:wrap}
   .spacer{flex:1}
   .annulus{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);border-radius:50%;pointer-events:none;opacity:0.45;box-sizing:border-box}
-  @media (max-width:900px){ .canvasRow{flex-direction:column;align-items:center} .plateCanvas{width:440px;height:440px} }
+  /* Hide base on-plate items while compare overlay active */
+  .hidden-onplate { opacity:0; transform:scale(0.98); transition:opacity 220ms ease, transform 220ms ease; pointer-events:none; }
+  @media (max-width:900px){ .canvasRow{flex-direction:column;align-items:center} .plateCanvas{width:440px;height:440px;padding:36px} }
 </style>
 </head>
 <body>
@@ -56,13 +58,13 @@
 
         <div class="canvasRow">
           <div class="plateCanvas" id="canvasRecommended" aria-label="Recommended comparison canvas">
-            <div class="layer" id="baseRecommended"></div>        <!-- colored template -->
+            <div class="layer" id="baseRecommended"></div>        <!-- colored template (on-plate elements toggled hidden-onplate when comparing) -->
             <div class="layer" id="annulusRecommended"></div>    <!-- annulus (green/red) -->
             <div class="layer" id="overlayRecommended" style="display:none"></div> <!-- scaled overlayRoot -->
           </div>
 
           <div style="min-width:260px">
-            <div class="caption" id="captionRecommended">Template shown in color. Run Compare to scale the plate. The annulus shows difference (green = growth, red = shrink).</div>
+            <div class="caption" id="captionRecommended">Template shown in color. Run Compare to scale the plate; items scale inside themselves (no duplicate look).</div>
           </div>
         </div>
       </div>
@@ -94,16 +96,13 @@
   </div>
 
 <script>
-/* Behavior implemented
- - Uses sessionStorage key 'plate_positions_fallback' (same as your index.html)
- - Base layer: renders the full saved scene once, in color (side items remain colored)
- - Overlay: built on-demand and appended into overlay layer as a single overlayRoot; overlayRoot contains:
-     * a perfectly circular SVG <circle> (so it stays a circle at all scales)
-     * on-plate items positioned using the same pixel coordinates as the base layer (so they line up)
-   overlayRoot is scaled with CSS transform (scale(...)) -> whole-plate scaling
- - Annulus: exact annulus drawn to the same center and scaled radii, so there is no white gap
- - Overlay stays until user clicks Clear; Reset All clears both panels
- - Half/quarter visuals preserved (fraction snapped near 0.5)
+/* New compare.html
+ - overlayRoot contains an SVG circle for perfect circular appearance and item wrappers placed with percentage coords
+ - on-plate base items get class hidden-onplate during compare to avoid duplicate appearance; side items remain colored
+ - overlayRoot scales as single unit so items scale inside themselves (no 'duplicate look')
+ - annulus drawn flush to circle edge
+ - persistent overlay until Clear
+ - payload from sessionStorage key 'plate_positions_fallback'
 */
 
 const SESSION_KEY = 'plate_positions_fallback';
@@ -136,7 +135,7 @@ function loadPayload() {
   try { return JSON.parse(raw); } catch(e){ return null; }
 }
 
-function computeSideSlots(canvasPx=560) {
+function computeSideSlots(canvasPx=600) {
   const columnX = canvasPx + 64;
   const slotStartY = 32;
   const slotSpacing = 56;
@@ -170,40 +169,42 @@ function normalizePayload(p) {
         item.x = s.x; item.y = s.y + Math.round((item.sizePx||40)/2);
       } else if (typeof item.x === 'number' && item.x >= 0 && item.x <= 12 && (!item.y || item.y === 0)) {
         const s = slots[Math.min(item.x, slots.length-1)];
-        item.x = s.x; item.y = s.y + Math.round((item.sizePx||40)/2); item.sideSlot = item.x;
+        item.x = s.x; item.y = s.y + Math.round((item.sizePx||40)/2);
+        item.sideSlot = item.x;
       }
     }
 
+    // ensure grams
     if (!('grams' in item) || item.grams == null) {
       if ('fraction' in item && item.fraction && item.gramsPerPortion) item.grams = Math.round(item.fraction * item.gramsPerPortion);
       else if (item.gramsPerPortion) item.grams = item.gramsPerPortion;
       else item.grams = 0;
     }
-
     if (item.gramsPerPortion && item.grams) item.fraction = Math.round((item.grams / item.gramsPerPortion) * 100) / 100;
     else if (!('fraction' in item)) item.fraction = 1;
-
     if (Math.abs((item.fraction || 0) - 0.5) < 0.02) item.fraction = 0.5;
   });
 }
 
-// Render the base (colored) layer for a canvas
+// Render base: full colored template. Mark on-plate wrappers with data-onplate so we can hide them while overlay active.
 function renderBase(targetBase) {
   targetBase.innerHTML = '';
-  // draw plate background element (keeps consistent center)
+  // plate background anchor (for alignment)
   const plateBg = document.createElement('div');
   plateBg.style.position = 'absolute';
   plateBg.style.left = '50%'; plateBg.style.top = '50%';
-  plateBg.style.width = '88%'; plateBg.style.height = '88%';
+  plateBg.style.width = '80%'; plateBg.style.height = '80%';
   plateBg.style.transform = 'translate(-50%,-50%)';
   plateBg.style.borderRadius = '50%';
   plateBg.style.background = 'transparent';
   targetBase.appendChild(plateBg);
 
   (payload.positions || []).forEach(p => {
-    const w = document.createElement('div'); w.className = 'itemWrapper';
-    w.style.left = (p.x||0) + 'px'; w.style.top = (p.y||0) + 'px';
-    w.style.width = (p.sizePx||48) + 'px'; w.style.height = (p.sizePx||48) + 'px';
+    const w = document.createElement('div');
+    w.className = 'itemWrapper';
+    w.dataset.onplate = p.placement === 'onplate' ? '1' : '0';
+    w.style.left = (p.x||0)+'px'; w.style.top = (p.y||0)+'px';
+    w.style.width = (p.sizePx||48)+'px'; w.style.height = (p.sizePx||48)+'px';
     w.style.transform = `translate(-50%,-50%) rotate(${p.rotationDeg||0}deg)`;
     const img = document.createElement('img');
     img.src = (p._imgOverride || (CATALOG[p.id] && CATALOG[p.id].img) || ('images/' + (p.id || 'unknown') + '.svg'));
@@ -212,50 +213,90 @@ function renderBase(targetBase) {
     const frac = p.fraction || 1;
     if (Math.abs(frac - 0.5) < 0.001) img.classList.add('clip-half');
     else if (frac < 0.5) img.style.transform = `scale(${Math.max(0.25, Math.min(1, frac))})`;
-    // Keep side items colored; everything rendered in full color
-    img.style.filter = '';
-    w.appendChild(img); targetBase.appendChild(w);
+    img.style.filter = ''; // colored
+    w.appendChild(img);
+    targetBase.appendChild(w);
   });
 }
 
-// Build overlayRoot that will be scaled as a single unit. It contains an SVG circle (perfect circle at all scales) and on-plate items positioned absolutely.
-// We append overlayRoot elements directly into overlayLayer so pixel coords line up with base layer.
-function buildOverlay(targetOverlay) {
+// Build overlayRoot: an element centered in canvas with an SVG circle and items positioned with percentages so they scale inside.
+// Positioning method: convert absolute canvas pixel coords to percentage coords relative to canvas dimensions.
+function buildOverlay(targetOverlay, canvasElem) {
   targetOverlay.innerHTML = '';
+  const canvasRect = canvasElem.getBoundingClientRect();
+  const cw = canvasRect.width;
+  const ch = canvasRect.height;
 
-  // create overlay root group for transform scaling
+  // overlay root (80% of canvas by CSS)
   const root = document.createElement('div');
   root.className = 'overlayRoot';
   root.style.position = 'absolute';
   root.style.left = '50%'; root.style.top = '50%';
-  root.style.width = '88%'; root.style.height = '88%';
+  root.style.width = '80%'; root.style.height = '80%';
   root.style.transform = 'translate(-50%,-50%)';
   root.style.transformOrigin = '50% 50%';
-  root.style.pointerEvents = 'none';
 
-  // add an SVG that draws a perfect circle filling the root box
+  // Add SVG circle that will always be perfect circle (scales with root)
   const svgNS = 'http://www.w3.org/2000/svg';
   const svg = document.createElementNS(svgNS, 'svg');
   svg.setAttribute('viewBox', '0 0 100 100');
   svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
-  svg.className = 'plateSvg';
+  svg.className = 'overlaySvg';
   svg.style.position = 'absolute'; svg.style.left = '0'; svg.style.top = '0'; svg.style.width = '100%'; svg.style.height = '100%';
   const circle = document.createElementNS(svgNS, 'circle');
   circle.setAttribute('cx','50'); circle.setAttribute('cy','50'); circle.setAttribute('r','49.5');
-  // fill transparent; border left to CSS if desired (we leave transparent center)
   circle.setAttribute('fill','transparent');
   circle.setAttribute('stroke','transparent');
   svg.appendChild(circle);
   root.appendChild(svg);
 
-  // Append on-plate items (skip side placement)
+  // Convert item pixel coords into percent positions inside the canvas, then into percent inside root (root is centered and 80%).
+  // Percentage within canvas: pxX / canvasWidth * 100
+  (payload.positions || []).forEach(p => {
+    if (p.placement === 'side') return; // side items stay in base
+    const px = p.x || 0;
+    const py = p.y || 0;
+    // percentage within canvas
+    const pctX = (px / cw) * 100;
+    const pctY = (py / ch) * 100;
+    // now within root: root occupies 80% and is centered, so map canvas percent to root percent:
+    // If canvas percent = 50% -> center -> root 50%. So same percent mapping works if we position root absolute in canvas coordinate system.
+    // Simpler: place item wrappers in overlay at the same pixel coordinates as base but inside overlay we use transform to scale whole overlay.
+    // To keep perfect scaling, append items with left/top in px relative to canvas by using absolute positioning on overlay layer and translate the root scaling to cover them.
+    // Implementation: we'll append items as absolute positioned children of root using pixel coords matching canvas by computing offset of root in px and subtracting it.
+    // Compute root bounding box in px to convert px -> percent within root
+    // To avoid measuring here (might be 0 before in-DOM), instead we append items into overlay layer (sibling of root) but wrap both root and items in a container that gets scaled.
+    // Simpler reliable approach: create a container equal to canvas size inside targetOverlay; place an inner scaledGroup centered which we scale. We'll do that:
+  });
+
+  // Alternative: easier robust approach: create a scaledGroup that covers entire canvas. Place SVG circle at center sized to 80% of group, and place items using the same pixel coordinates inside group.
+  // Build scaledGroup:
+  const scaledGroup = document.createElement('div');
+  scaledGroup.style.position = 'absolute';
+  scaledGroup.style.left = '0'; scaledGroup.style.top = '0';
+  scaledGroup.style.width = '100%'; scaledGroup.style.height = '100%';
+  scaledGroup.style.transformOrigin = '50% 50%';
+
+  // Draw a perfectly circular SVG inside scaledGroup centered and sized to 80% of canvas here:
+  const svg2 = document.createElementNS(svgNS,'svg');
+  svg2.setAttribute('viewBox','0 0 100 100');
+  svg2.setAttribute('preserveAspectRatio','xMidYMid meet');
+  svg2.style.position='absolute'; svg2.style.left='10%'; svg2.style.top='10%'; svg2.style.width='80%'; svg2.style.height='80%';
+  const circle2 = document.createElementNS(svgNS,'circle');
+  circle2.setAttribute('cx','50'); circle2.setAttribute('cy','50'); circle2.setAttribute('r','49.5');
+  circle2.setAttribute('fill','transparent'); circle2.setAttribute('stroke','transparent');
+  svg2.appendChild(circle2);
+  scaledGroup.appendChild(svg2);
+
+  // place on-plate items inside scaledGroup at the same pixel coordinates they had in base (so they match visually). scaledGroup will be transformed (scaled).
   (payload.positions || []).forEach(p => {
     if (p.placement === 'side') return;
     const w = document.createElement('div'); w.className = 'itemWrapper';
-    // absolute pixel coordinates so they line up with base
     w.style.position = 'absolute';
-    w.style.left = (p.x||0) + 'px'; w.style.top = (p.y||0) + 'px';
-    w.style.width = (p.sizePx||48) + 'px'; w.style.height = (p.sizePx||48) + 'px';
+    w.style.left = (p.x||0) + 'px';
+    w.style.top = (p.y||0) + 'px';
+    w.style.width = (p.sizePx||48) + 'px';
+    w.style.height = (p.sizePx||48) + 'px';
     w.style.transform = `translate(-50%,-50%) rotate(${p.rotationDeg||0}deg)`;
     const img = document.createElement('img');
     img.src = (p._imgOverride || (CATALOG[p.id] && CATALOG[p.id].img) || ('images/' + (p.id || 'unknown') + '.svg'));
@@ -265,18 +306,21 @@ function buildOverlay(targetOverlay) {
     if (Math.abs(frac - 0.5) < 0.001) img.classList.add('clip-half');
     else if (frac < 0.5) img.style.transform = `scale(${Math.max(0.25, Math.min(1, frac))})`;
     w.appendChild(img);
-    // append wrappers to overlay layer root (not inside svg) so pixel coords match base
-    root.appendChild(w);
+    scaledGroup.appendChild(w);
   });
 
-  targetOverlay.appendChild(root);
-  // baseline slightly smaller so expansion looks visible
-  root.style.transform = 'translate(-50%,-50%) scale(0.92)';
-  targetOverlay.dataset.hasOverlay = 'true';
+  // Finally append scaledGroup into targetOverlay (which matches canvas coordinates) so pixel coords align with base DOM.
+  targetOverlay.appendChild(scaledGroup);
+
+  // baseline scale slightly smaller so growth is visible
+  scaledGroup.style.transform = 'scale(0.92)';
   targetOverlay.style.display = 'block';
+  targetOverlay.dataset.hasOverlay = 'true';
+  // store reference to scaledGroup for later transforms
+  targetOverlay._scaledGroup = scaledGroup;
 }
 
-// compute totals from payload and targetMap
+// compute totals (actual vs target)
 function computeTotals(targetMap) {
   const actual = (payload.positions || []).reduce((s,p) => s + (p.grams || 0), 0);
   let target = 0;
@@ -284,41 +328,37 @@ function computeTotals(targetMap) {
   return { actual, target };
 }
 
-// draw an exact annulus centered on the plate that has no gap between scaled overlay and ring:
-// - baseDiameterPx is the unscaled plate diameter in px (we compute it from canvas geometry)
-// - scaledDiameterPx = baseDiameterPx * scale
-// - the annulus outer diameter = max(baseDiameterPx, scaledDiameterPx)
-// - the annulus thickness = |scaledDiameterPx - baseDiameterPx|
+// draw annulus flush to circular edge; canvasRect used to compute pixel sizes
 function drawAnnulus(annNode, scale) {
   annNode.innerHTML = '';
   if (!scale || isNaN(scale)) return;
   const canvas = annNode.parentElement;
   const canvasRect = canvas.getBoundingClientRect();
-  // base diameter in pixels corresponds to 88% of canvas inner width (padding included in CSS)
-  const baseDia = Math.min(canvasRect.width, canvasRect.height) * 0.88;
+  const baseDia = Math.min(canvasRect.width, canvasRect.height) * 0.8; // matches scaledGroup circle 80% of canvas
   const scaledDia = baseDia * scale;
   const outer = Math.max(baseDia, scaledDia);
-  const thickness = Math.abs(scaledDia - baseDia) || 0.5;
-
+  const thickness = Math.abs(scaledDia - baseDia) || 1;
   const ann = document.createElement('div');
   ann.className = 'annulus';
   ann.style.width = outer + 'px';
   ann.style.height = outer + 'px';
-  ann.style.border = `${Math.max(3, thickness/2)}px solid ${scale > 1 ? 'limegreen' : 'tomato'}`;
+  ann.style.border = `${Math.max(4, thickness/2)}px solid ${scale > 1 ? 'limegreen' : 'tomato'}`;
   ann.style.left = '50%'; ann.style.top = '50%';
   ann.style.transform = 'translate(-50%,-50%)';
-  ann.style.boxSizing = 'border-box';
   annNode.appendChild(ann);
 }
 
-// run comparison: builds overlayRoot, draws annulus flush to plate edge, scales overlayRoot as unit. Overlay persists until Clear.
+// Run compare: build overlay, hide base on-plate items, draw annulus and scale overlay group
 function runCompare(targetOverlay, targetBase, annNode, captionEl, targetMap, title) {
   if (!payload) { alert('No saved plate.'); return; }
   captionEl.textContent = title || '';
 
-  // rebuild overlay (clear previous to avoid duplicates)
+  // clear previous overlay and annulus first
   targetOverlay.innerHTML = '';
-  buildOverlay(targetOverlay);
+  annNode.innerHTML = '';
+
+  // Build overlay (places scaledGroup inside overlay)
+  buildOverlay(targetOverlay, targetBase.parentElement);
 
   const { actual, target } = computeTotals(targetMap || {});
   const safeActual = Math.max(1, actual);
@@ -326,17 +366,22 @@ function runCompare(targetOverlay, targetBase, annNode, captionEl, targetMap, ti
   let scale = safeTarget <= 0 ? 0.001 : Math.sqrt(safeTarget / safeActual);
   scale = Math.max(0.12, Math.min(3.0, scale));
 
-  // draw annulus that is flush to plate edge
+  // hide base on-plate items to avoid visual duplication; keep side items colored
+  Array.from(targetBase.querySelectorAll('.itemWrapper')).forEach(el => {
+    if (el.dataset.onplate === '1') el.classList.add('hidden-onplate');
+  });
+
+  // draw annulus flush to edge
   drawAnnulus(annNode, scale);
 
-  // scale the overlayRoot (the first child of overlay layer)
-  const root = targetOverlay.querySelector('.overlayRoot');
-  if (root) {
-    root.style.transition = `transform 900ms cubic-bezier(.2,.9,.2,1)`;
-    // keep translate + apply scale
-    requestAnimationFrame(()=> root.style.transform = 'translate(-50%,-50%) scale(' + scale + ')');
+  // scale the overlay group's transform
+  const scaledGroup = targetOverlay._scaledGroup;
+  if (scaledGroup) {
+    scaledGroup.style.transition = `transform 900ms cubic-bezier(.2,.9,.2,1)`;
+    requestAnimationFrame(()=> scaledGroup.style.transform = `scale(${scale})`);
   }
-  // caption: aggregate diffs
+
+  // caption show diffs
   setTimeout(()=> {
     const agg = {};
     (payload.positions || []).forEach(p => { agg[p.id] = (agg[p.id]||0) + (p.grams || 0); });
@@ -357,15 +402,18 @@ function runCompare(targetOverlay, targetBase, annNode, captionEl, targetMap, ti
   }, 900);
 }
 
-// clear comparison: remove overlay and annulus, restore base color
+// Clear compare: remove overlay and annulus, show base on-plate items again
 function clearCompare(targetOverlay, targetBase, annNode, captionEl) {
   targetOverlay.innerHTML = '';
+  delete targetOverlay._scaledGroup;
   annNode.innerHTML = '';
-  targetOverlay.style.display = 'none';
+  Array.from(targetBase.querySelectorAll('.itemWrapper')).forEach(el => {
+    if (el.dataset.onplate === '1') el.classList.remove('hidden-onplate');
+  });
   captionEl.textContent = 'Comparison cleared. Template remains colored.';
 }
 
-// portions -> grams helper (recommended)
+// helper portions->grams for recommended
 function portionsToGramsMap(portions) {
   const g = {};
   Object.keys(portions||{}).forEach(id => {
@@ -390,7 +438,7 @@ document.getElementById('cmpRecommendedBtn').addEventListener('click', ()=> {
 });
 document.getElementById('clearRecommendedBtn').addEventListener('click', ()=> clearCompare(overRec, baseRec, annRec, capRec));
 
-// Reality (custom)
+// Reality panel
 document.getElementById('cmpRealityBtn').addEventListener('click', ()=> {
   const raw = prompt('Enter target grams JSON mapping (e.g. { "potato": 200, "apple": 100 }) — leave empty to use recommended');
   let target = null;
@@ -402,7 +450,7 @@ document.getElementById('cmpRealityBtn').addEventListener('click', ()=> {
 });
 document.getElementById('clearRealityBtn').addEventListener('click', ()=> clearCompare(overReal, baseReal, annReal, capReal));
 
-// init
+// init: load payload, normalize and render both base panels
 (function init(){
   const p = loadPayload();
   if (!p) {
