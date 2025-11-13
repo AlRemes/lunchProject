@@ -2,58 +2,98 @@
 <html>
 <head>
 <meta charset="utf-8"/>
-<title>Compare Plate — whole-plate scaling (no duplicate)</title>
+<title>Compare Plate — two-panel whole-plate scaling</title>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <style>
-  body{font-family:Arial;margin:14px;background:#f6f6f7}
-  .topbar{display:flex;gap:12px;align-items:center;justify-content:center;margin-bottom:10px}
+  body{font-family:Arial,margin:14px;background:#f6f6f7}
+  .topbar{display:flex;gap:12px;align-items:center;justify-content:flex-start;margin-bottom:12px}
   .btn{padding:8px 12px;border-radius:6px;border:1px solid #bbb;background:#fff;cursor:pointer}
-  #stage{position:relative;width:980px;height:660px;margin:6px auto;border-radius:8px;background:#fff;padding:16px;box-shadow:0 6px 22px rgba(0,0,0,0.08)}
-  #plateWrap{position:relative;width:720px;height:640px;margin:0 auto}
-  #plateCanvas{position:relative;width:520px;height:520px;border-radius:50%;background:#fff6e6;border:8px solid #eee;overflow:visible;margin:10px auto}
-  #plateCanvas .layer{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none}
-  #baseLayer{z-index:0; transform-origin:50% 50%;}
-  #overlayLayer{z-index:2; transform-origin:50% 50%; display:none;} /* built on-demand */
+  .page{max-width:980px;margin:0 auto}
+  .panels{display:flex;flex-direction:column;gap:48px;padding-bottom:120px}
+  .panel{background:#fff;padding:12px;border-radius:8px;box-shadow:0 6px 22px rgba(0,0,0,0.06)}
+  .panelHeader{display:flex;gap:10px;align-items:center;margin-bottom:8px}
+  .panelTitle{font-weight:600}
+  .canvasRow{display:flex;gap:18px;align-items:flex-start}
+  /* plate canvas */
+  .plateCanvas{position:relative;width:520px;height:520px;border-radius:50%;background:#fff6e6;border:8px solid #eee;overflow:visible}
+  .layer{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none}
   .plateCircle { position:absolute; left:50%; top:50%; width:88%; height:88%; transform:translate(-50%,-50%); border-radius:50%; background:transparent; }
   .itemWrapper{position:absolute; transform:translate(-50%,-50%); pointer-events:none}
   .itemWrapper img{display:block;width:100%;height:100%;object-fit:contain}
   .clip-half { -webkit-clip-path: polygon(0 0, 100% 100%, 0 100%); clip-path: polygon(0 0, 100% 100%, 0 100%); }
-  #caption{margin-top:12px;text-align:center;font-size:14px}
-  .small{font-size:13px;color:#444}
+  .caption{font-size:13px;color:#333;margin-top:8px}
+  .controls{display:flex;gap:8px;flex-wrap:wrap}
+  .spacer{flex:1}
+  /* make page scrollable if needed */
+  @media (max-width:900px){ .canvasRow{flex-direction:column;align-items:center} .plateCanvas{width:420px;height:420px} }
 </style>
 </head>
 <body>
-  <div class="topbar">
-    <button id="backBtn" class="btn">Back</button>
-    <button id="cmpRecommendedBtn" class="btn">Compare to Recommended (Finland)</button>
-    <button id="cmpRealityBtn" class="btn">Compare to Reality (custom)</button>
-    <div id="status" class="small" style="margin-left:8px"></div>
-  </div>
+  <div class="page">
+    <div class="topbar">
+      <button id="backBtn" class="btn">Back</button>
+      <div style="width:8px"></div>
+      <div class="small" style="color:#444">Template: your saved plate is shown in full color below. Use panels to compare.</div>
+      <div class="spacer"></div>
+      <button id="resetAllBtn" class="btn">Reset Comparisons</button>
+    </div>
 
-  <div id="stage">
-    <div id="plateWrap">
-      <div id="plateCanvas">
-        <div id="baseLayer" class="layer"></div>
-        <div id="overlayLayer" class="layer"></div>
+    <div class="panels" id="panels">
+      <!-- Recommended panel -->
+      <div class="panel" id="panelRecommended">
+        <div class="panelHeader">
+          <div class="panelTitle">Compare to Recommended (Finland)</div>
+          <div class="spacer"></div>
+          <div class="controls">
+            <button id="cmpRecommendedBtn" class="btn">Run Compare</button>
+            <button id="clearRecommendedBtn" class="btn">Clear</button>
+          </div>
+        </div>
+        <div class="canvasRow">
+          <div class="plateCanvas" id="canvasRecommended">
+            <div class="layer" id="baseRecommended"></div>
+            <div class="layer" id="overlayRecommended" style="display:none; transform-origin:50% 50%;"></div>
+          </div>
+          <div style="min-width:260px">
+            <div class="caption" id="captionRecommended">Template used as-is. Press "Run Compare" to build overlay and scale plate.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Reality panel (scrolls into view) -->
+      <div class="panel" id="panelReality">
+        <div class="panelHeader">
+          <div class="panelTitle">Compare to Reality (custom)</div>
+          <div class="spacer"></div>
+          <div class="controls">
+            <button id="cmpRealityBtn" class="btn">Run Compare</button>
+            <button id="clearRealityBtn" class="btn">Clear</button>
+          </div>
+        </div>
+        <div class="canvasRow">
+          <div class="plateCanvas" id="canvasReality">
+            <div class="layer" id="baseReality"></div>
+            <div class="layer" id="overlayReality" style="display:none; transform-origin:50% 50%;"></div>
+          </div>
+          <div style="min-width:260px">
+            <div class="caption" id="captionReality">Provide target grams for a custom reality comparison or use the recommended button above.</div>
+          </div>
+        </div>
       </div>
     </div>
-    <div id="caption" class="small"></div>
   </div>
 
 <script>
 /*
- compare.html — final behavior:
- - Renders saved scene in color (baseLayer). No overlay until compare button clicked (no duplicate).
- - On compare: build overlay containing plate circle + only on-plate items (colored) and scale overlay as one unit.
- - Base template becomes grayed while overlay is visible and scaled.
- - Fractions snapped near 0.5 to preserve clip-half visuals.
- - Side items remain only in baseLayer and do not scale.
- - Expects session payload under sessionStorage key 'plate_positions_fallback'.
+ - Two panels share the same saved template payload (sessionStorage key 'plate_positions_fallback').
+ - Base layer is colored template and remains single (no duplicates).
+ - Overlay is built on-demand per panel; overlay contains a plate circle + only on-plate items, and is scaled as one group.
+ - Overlay remains until user clicks Clear for that panel or Reset All.
+ - Side items stay in base layer and do not scale.
+ - Half-preservation: fraction snapped near 0.5 (±0.02) to 0.5.
 */
 
 const SESSION_KEY = 'plate_positions_fallback';
-const PLATE_CANVAS_PX = 520;
-
 const CATALOG = {
   potato: { img:'images/potato.svg', gramsPerPortion:150 },
   sausage: { img:'images/sausage.svg', gramsPerPortion:75 },
@@ -64,14 +104,30 @@ const CATALOG = {
   milk: { img:'images/milk-carton.svg', gramsPerPortion:250 }
 };
 
+// UI elements
+const baseRec = document.getElementById('baseRecommended');
+const overRec = document.getElementById('overlayRecommended');
+const capRec = document.getElementById('captionRecommended');
+
+const baseReal = document.getElementById('baseReality');
+const overReal = document.getElementById('overlayReality');
+const capReal = document.getElementById('captionReality');
+
 let payload = null;
 
-function computeSideSlots() {
-  const columnX = PLATE_CANVAS_PX + 56;
+// helpers
+function loadPayload() {
+  const raw = sessionStorage.getItem(SESSION_KEY);
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch(e){ return null; }
+}
+
+function computeSideSlots(canvasPx=520) {
+  const columnX = canvasPx + 56;
   const slotStartY = 28;
   const slotSpacing = 56;
   const slotBaseHeight = 48;
-  const availableHeight = PLATE_CANVAS_PX - slotStartY - 20;
+  const availableHeight = canvasPx - slotStartY - 20;
   const slotStep = slotBaseHeight + slotSpacing;
   const maxSlots = Math.max(4, Math.floor(availableHeight / slotStep));
   const slots = [];
@@ -79,13 +135,7 @@ function computeSideSlots() {
   return slots;
 }
 
-function loadPayload() {
-  const raw = sessionStorage.getItem(SESSION_KEY);
-  if (!raw) return null;
-  try { return JSON.parse(raw); } catch(e){ return null; }
-}
-
-function normalize(p) {
+function normalizePayload(p) {
   const slots = computeSideSlots();
   (p.positions || []).forEach(item => {
     if (typeof item.id === 'string') item.id = item.id.trim();
@@ -111,6 +161,7 @@ function normalize(p) {
       }
     }
 
+    // ensure grams exist
     if (!('grams' in item) || item.grams == null) {
       if ('fraction' in item && item.fraction && item.gramsPerPortion) item.grams = Math.round(item.fraction * item.gramsPerPortion);
       else if (item.gramsPerPortion) item.grams = item.gramsPerPortion;
@@ -125,12 +176,12 @@ function normalize(p) {
   });
 }
 
-function renderBaseLayer() {
-  const baseLayer = document.getElementById('baseLayer');
-  baseLayer.innerHTML = '';
+// render a base layer (colored template). targetBase is DOM element for base layer.
+function renderBaseLayer(targetBase) {
+  targetBase.innerHTML = '';
   const plateBg = document.createElement('div'); plateBg.className='plateCircle';
   plateBg.style.background = 'transparent';
-  baseLayer.appendChild(plateBg);
+  targetBase.appendChild(plateBg);
 
   (payload.positions || []).forEach(p => {
     const w = document.createElement('div'); w.className='itemWrapper';
@@ -144,21 +195,21 @@ function renderBaseLayer() {
     const frac = p.fraction || 1;
     if (Math.abs(frac - 0.5) < 0.001) img.classList.add('clip-half');
     else if (frac < 0.5) img.style.transform = `scale(${Math.max(0.25, Math.min(1, frac))})`;
-    // base (template) is colored initially; only desaturate during compare
-    img.style.filter = '';
-    w.appendChild(img); baseLayer.appendChild(w);
+    img.style.filter = ''; // colored template
+    w.appendChild(img);
+    targetBase.appendChild(w);
   });
 }
 
-function buildOverlayLayer() {
-  const overlay = document.getElementById('overlayLayer');
-  overlay.innerHTML = '';
+// build overlay into targetOverlay (adds plate circle + on-plate items)
+function buildOverlay(targetOverlay) {
+  targetOverlay.innerHTML = '';
   const plate = document.createElement('div'); plate.className='plateCircle';
   plate.style.background = 'transparent';
-  overlay.appendChild(plate);
+  targetOverlay.appendChild(plate);
 
   (payload.positions || []).forEach(p => {
-    if (p.placement === 'side') return; // side items remain static in baseLayer
+    if (p.placement === 'side') return; // skip side
     const w = document.createElement('div'); w.className='itemWrapper';
     w.style.left = (p.x||0)+'px'; w.style.top = (p.y||0)+'px';
     w.style.width = (p.sizePx||48)+'px'; w.style.height = (p.sizePx||48)+'px';
@@ -170,26 +221,29 @@ function buildOverlayLayer() {
     const frac = p.fraction || 1;
     if (Math.abs(frac - 0.5) < 0.001) img.classList.add('clip-half');
     else if (frac < 0.5) img.style.transform = `scale(${Math.max(0.25, Math.min(1, frac))})`;
-    w.appendChild(img); overlay.appendChild(w);
+    w.appendChild(img);
+    targetOverlay.appendChild(w);
   });
 
-  overlay.style.transform = 'scale(0.92)';
-  overlay.style.display = 'block';
+  targetOverlay.style.transform = 'scale(0.92)';
+  targetOverlay.style.display = 'block';
 }
 
+// compute totals to derive scale: id->grams expected in targetMap
 function computeTotals(targetMap) {
-  const actual = (payload.positions || []).reduce((s,p)=> s + (p.grams || 0), 0);
+  const actual = (payload.positions || []).reduce((s,p) => s + (p.grams || 0), 0);
   let target = 0;
-  Object.keys(targetMap || {}).forEach(k => { target += (targetMap[k] || 0); });
+  Object.keys(targetMap || {}).forEach(k => target += (targetMap[k] || 0));
   return { actual, target };
 }
 
-function animateCompare(targetMap, title) {
-  if (!payload) { alert('No plate payload.'); return; }
-  document.getElementById('caption').textContent = title || '';
+// animate comparison for a given overlay/base pair. overlay stays until cleared.
+function runCompare(targetOverlay, targetBase, captionEl, targetMap, title) {
+  if (!payload) { alert('No saved plate found.'); return; }
+  captionEl.textContent = title || '';
 
-  // build overlay on-demand (prevents duplicate before compare)
-  buildOverlayLayer();
+  // build overlay fresh each run to avoid duplication
+  buildOverlay(targetOverlay);
 
   const { actual, target } = computeTotals(targetMap || {});
   const safeActual = Math.max(1, actual);
@@ -197,19 +251,17 @@ function animateCompare(targetMap, title) {
   let scale = safeTarget <= 0 ? 0.001 : Math.sqrt(safeTarget / safeActual);
   scale = Math.max(0.12, Math.min(3.0, scale));
 
-  // gray the base template (desaturate) while overlay is visible
-  const baseLayer = document.getElementById('baseLayer');
-  baseLayer.style.transition = 'filter 300ms ease, opacity 300ms ease';
-  baseLayer.style.filter = 'grayscale(1)';
-  baseLayer.style.opacity = '0.45';
+  // desaturate base template
+  targetBase.style.transition = 'filter 300ms ease, opacity 300ms ease';
+  targetBase.style.filter = 'grayscale(1)';
+  targetBase.style.opacity = '0.45';
 
-  // scale overlay (plate circle + on-plate items) as a group
-  const overlay = document.getElementById('overlayLayer');
-  overlay.style.transition = `transform 900ms cubic-bezier(.2,.9,.2,1), opacity 400ms ease`;
-  overlay.style.transformOrigin = '50% 50%';
-  requestAnimationFrame(()=> overlay.style.transform = `scale(${scale})`);
+  // scale overlay (group)
+  targetOverlay.style.transition = `transform 900ms cubic-bezier(.2,.9,.2,1), opacity 400ms ease`;
+  targetOverlay.style.transformOrigin = '50% 50%';
+  requestAnimationFrame(()=> targetOverlay.style.transform = `scale(${scale})`);
 
-  // compute diffs for caption and restore after short delay
+  // compute diffs and show caption
   setTimeout(()=> {
     const agg = {};
     (payload.positions || []).forEach(p => { agg[p.id] = (agg[p.id]||0) + (p.grams || 0); });
@@ -218,40 +270,53 @@ function animateCompare(targetMap, title) {
     ids.forEach(id => {
       const a = agg[id] || 0; const t = (targetMap && (targetMap[id] || 0)) || 0;
       if (Math.abs(a - t) < 1) return;
-      const pct = a === 0 ? (t>0 ? 100 : 0) : Math.round(((t - a) / Math.max(1,a)) * 100);
+      const pct = a === 0 ? (t>0?100:0) : Math.round(((t - a) / Math.max(1,a)) * 100);
       diffs.push({ id, a, t, pct });
     });
     diffs.sort((x,y) => Math.abs(y.pct) - Math.abs(x.pct));
     const top = diffs.slice(0,6).map(d => {
-      const pctLabel = d.a === 0 ? (d.t>0 ? '+100%' : '0%') : ((d.t - d.a) >= 0 ? '+' : '') + Math.round(((d.t - d.a)/Math.max(1,d.a))*100) + '%';
+      const pctLabel = d.a===0 ? (d.t>0?'+100%':'0%') : ((d.t - d.a)>=0?'+':'') + Math.round(((d.t - d.a)/Math.max(1,d.a))*100) + '%';
       return `${d.id}: ${Math.round(d.a)}g→${Math.round(d.t)}g (${pctLabel})`;
     });
-    document.getElementById('caption').textContent = (title ? title + ': ' : '') + (top.length ? top.join('; ') : 'No significant changes');
-
-    // restore base color and reset overlay baseline after a pause; keep overlay visible
-    setTimeout(()=> {
-      baseLayer.style.filter = ''; baseLayer.style.opacity = '';
-      overlay.style.transform = 'scale(0.92)';
-    }, 2200);
+    captionEl.textContent = (title ? title + ': ' : '') + (top.length ? top.join('; ') : 'No significant changes');
   }, 1000);
 }
 
-// helper to convert portions->grams for recommended
-function portionsToGramsMap(portions) {
-  const g = {};
-  Object.keys(portions||{}).forEach(id => {
-    const per = (CATALOG[id] && CATALOG[id].gramsPerPortion) || (id==='bread' && CATALOG.bread && CATALOG.bread.gramsPerPortion) || 100;
-    g[id] = (portions[id]||0) * per;
-  });
-  return g;
+// clear overlay for a given overlay/base pair
+function clearCompare(targetOverlay, targetBase, captionEl) {
+  targetOverlay.style.display = 'none';
+  targetOverlay.innerHTML = '';
+  targetBase.style.filter = '';
+  targetBase.style.opacity = '';
+  captionEl.textContent = 'Comparison cleared. Template remains colored.';
 }
 
-const recommended = { carrot:2, apple:1, potato:1, bread:0, sausage:1, milk:1, water:1 };
-const recommendedGrams = portionsToGramsMap(recommended);
+// recommended default mapping (portions -> grams)
+function portionsToGramsMap(portions) {
+  const grams = {};
+  Object.keys(portions||{}).forEach(id => {
+    const per = (CATALOG[id] && CATALOG[id].gramsPerPortion) || (id==='bread' && CATALOG.bread && CATALOG.bread.gramsPerPortion) || 100;
+    grams[id] = (portions[id] || 0) * per;
+  });
+  return grams;
+}
+const recommendedPortions = { carrot:2, apple:1, potato:1, bread:0, sausage:1, milk:1, water:1 };
+const recommendedGrams = portionsToGramsMap(recommendedPortions);
 
 // UI wiring
 document.getElementById('backBtn').addEventListener('click', ()=> history.back());
-document.getElementById('cmpRecommendedBtn').addEventListener('click', ()=> animateCompare(recommendedGrams, 'Recommended (Finland) vs Estimate'));
+document.getElementById('resetAllBtn').addEventListener('click', ()=> {
+  clearCompare(overRec, baseRec, capRec);
+  clearCompare(overReal, baseReal, capReal);
+});
+
+// Recommended panel buttons
+document.getElementById('cmpRecommendedBtn').addEventListener('click', ()=> {
+  runCompare(overRec, baseRec, capRec, recommendedGrams, 'Recommended (Finland) vs Estimate');
+});
+document.getElementById('clearRecommendedBtn').addEventListener('click', ()=> clearCompare(overRec, baseRec, capRec));
+
+// Reality panel buttons (custom)
 document.getElementById('cmpRealityBtn').addEventListener('click', ()=> {
   const raw = prompt('Enter target grams JSON mapping (e.g. { "potato": 200, "apple": 100 }) — leave empty to use recommended');
   let target = null;
@@ -259,19 +324,23 @@ document.getElementById('cmpRealityBtn').addEventListener('click', ()=> {
   else {
     try { target = JSON.parse(raw); } catch(e){ alert('Invalid JSON'); return; }
   }
-  animateCompare(target, 'Reality vs Estimate');
+  runCompare(overReal, baseReal, capReal, target, 'Reality vs Estimate');
 });
+document.getElementById('clearRealityBtn').addEventListener('click', ()=> clearCompare(overReal, baseReal, capReal));
 
-// init: load payload, normalize, render base only (colored). overlay not present until compare.
+// init: load payload, normalize and render both base layers (same template)
 (function init(){
   const p = loadPayload();
   if (!p) {
-    document.getElementById('caption').textContent = 'No saved plate found in sessionStorage under key: ' + SESSION_KEY;
+    baseRec.innerHTML = ''; baseReal.innerHTML = '';
+    capRec.textContent = 'No saved plate found in sessionStorage under key: ' + SESSION_KEY;
+    capReal.textContent = 'No saved plate found in sessionStorage under key: ' + SESSION_KEY;
     return;
   }
   payload = p;
-  normalize(payload);
-  renderBaseLayer();
+  normalizePayload(payload);
+  renderBaseLayer(baseRec);
+  renderBaseLayer(baseReal);
 })();
 </script>
 </body>
