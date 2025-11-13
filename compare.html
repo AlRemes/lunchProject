@@ -10,11 +10,16 @@
   .btn{padding:8px 12px;border-radius:6px;border:1px solid #bbb;background:#fff;cursor:pointer}
   #stage{position:relative;width:760px;height:520px;margin:6px auto;border-radius:8px;background:#fff;padding:16px;box-shadow:0 6px 22px rgba(0,0,0,0.08)}
   #plateWrapper{position:relative;width:420px;height:420px;margin:0 auto}
+  /* plateCanvas now contains two stacked layers: baseLayer and overlayLayer */
   #plateCanvas{position:relative;width:420px;height:420px;border-radius:50%;background:#fff6e6;border:8px solid #eee;overflow:visible}
+  #plateCanvas .layer{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none}
+  #plateCanvas #baseLayer{z-index:0}
+  #plateCanvas #overlayLayer{z-index:2}
   .baseItemWrapper{position:absolute; transform:translate(-50%,-50%); pointer-events:none;}
   .baseItemWrapper img{display:block;width:100%;height:100%;object-fit:contain}
   .overlayWrapper{position:absolute; transform:translate(-50%,-50%); pointer-events:none; transition: opacity 300ms ease}
   .overlayWrapper img{display:block;width:100%;height:100%;object-fit:contain; pointer-events:none}
+  /* clipped half: top-left -> bottom-right */
   .clip-half { -webkit-clip-path: polygon(0 0, 100% 100%, 0 100%); clip-path: polygon(0 0, 100% 100%, 0 100%); }
   #caption{margin-top:12px;text-align:center;font-size:14px}
   #controls{width:760px;margin:10px auto;text-align:center}
@@ -33,12 +38,24 @@
 
   <div id="stage">
     <div id="plateWrapper">
-      <div id="plateCanvas"></div>
+      <div id="plateCanvas">
+        <div id="baseLayer" class="layer"></div>
+        <div id="overlayLayer" class="layer"></div>
+      </div>
     </div>
     <div id="caption" class="small"></div>
   </div>
 
 <script>
+/*
+ Full compare.html (final)
+ - reads session fallback from sessionStorage key 'plate_positions_fallback' or server sessionId
+ - preserves fractions (half -> diagonal clip; quarter -> scaled)
+ - base/overlay layers separated so overlay remains colored while base is grayed
+ - supports bread_variant instances (infers image from label if needed)
+ - shows clear diffs with rounded grams and signed percent
+*/
+
 const WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbxEpMGjGgkn8a7_RG0-fSyPj-IZny88ZChcqtQ_ks1ALOv0bxrKYTmLy8pSjx0A5euX5A/exec';
 const PLATE_DIAMETER = 420;
 
@@ -58,8 +75,8 @@ const CATALOG = {
   milk: { img:'images/milk-carton.svg', gramsPerPortion:250 }
 };
 
+// load payload from server (sessionId) or fallback to sessionStorage
 async function loadBase() {
-  // try sessionId first (server), then fallback to sessionStorage
   const sid = qs('sessionId');
   if (sid) {
     try {
@@ -79,35 +96,38 @@ async function loadBase() {
     return;
   }
 
-  // Normalization: ensure each anchor has gramsPerPortion, _imgOverride (if possible), and fraction
+  // Normalization: ensure gramsPerPortion, grams and fraction exist and infer _imgOverride for bread variants
   (basePayload.positions || []).forEach(p => {
-    // If bread_variant was saved (index used id 'bread_variant' and saved _imgOverride when created),
-    // some payloads may not include _imgOverride. Recover from label if needed.
-    if (p.id === 'bread_variant' || (p.id && p.id.indexOf('bread') === 0 && !CATALOG[p.id])) {
-      // Use base bread gramsPerPortion
+    // bread_variant or synthetic bread instances: infer image and gramsPerPortion
+    if (p.id === 'bread_variant' || (!p.id && p.label && p.label.toLowerCase().includes('bread'))) {
+      // infer base bread gramsPerPortion and override image from label if missing
       p.gramsPerPortion = p.gramsPerPortion || (CATALOG.bread && CATALOG.bread.gramsPerPortion) || 40;
-      // If instance had _imgOverride and it was saved, keep it; otherwise infer from label text
       if (!p._imgOverride) {
-        const label = (p.label || '').toLowerCase();
-        if (label.includes('cheese')) p._imgOverride = 'images/cheese-bread.svg';
-        else if (label.includes('butter')) p._imgOverride = 'images/bread-with-butter.svg';
+        const lbl = (p.label || '').toLowerCase();
+        if (lbl.includes('cheese')) p._imgOverride = 'images/cheese-bread.svg';
+        else if (lbl.includes('butter')) p._imgOverride = 'images/bread-with-butter.svg';
         else p._imgOverride = CATALOG.bread.img;
       }
+    } else if (CATALOG[p.id]) {
+      // normal catalog item: ensure gramsPerPortion from catalog
+      p.gramsPerPortion = p.gramsPerPortion || CATALOG[p.id].gramsPerPortion;
     } else {
-      // canonical id present in catalog -> use it
-      const cat = CATALOG[p.id];
-      if (cat) p.gramsPerPortion = p.gramsPerPortion || cat.gramsPerPortion;
-      // if id is unknown but has _imgOverride in payload, leave as-is; else attempt to guess from id
+      // unknown id: leave as-is but ensure gramsPerPortion default
+      p.gramsPerPortion = p.gramsPerPortion || 100;
     }
-    // Ensure grams exists (index saved grams). If not, derive from fraction or from gramsPerPortion.
+
+    // ensure grams exists: if payload didn't save grams, derive from fraction or gramsPerPortion
     if (!('grams' in p) || p.grams == null) {
       if ('fraction' in p && p.fraction && p.gramsPerPortion) {
-        p.grams = Math.round(p.gramsPerPortion * p.fraction);
+        p.grams = Math.round(p.fraction * p.gramsPerPortion);
+      } else if (p.gramsPerPortion) {
+        p.grams = p.gramsPerPortion;
       } else {
-        p.grams = p.gramsPerPortion || 0;
+        p.grams = 0;
       }
     }
-    // Compute fraction from grams / gramsPerPortion so compare can visually display halves/quarters
+
+    // compute fraction reliably (rounded to 2 decimals)
     if (p.gramsPerPortion && p.grams) {
       p.fraction = Math.round((p.grams / p.gramsPerPortion) * 100) / 100;
     } else if (!('fraction' in p)) {
@@ -118,12 +138,17 @@ async function loadBase() {
   renderBasePlate(basePayload);
 }
 
-// render anchored base plate with fraction visuals preserved
+// render anchored base plate with fraction visuals preserved into baseLayer
 function renderBasePlate(payload) {
   const canvas = document.getElementById('plateCanvas');
-  canvas.innerHTML = '';
+  const baseLayer = document.getElementById('baseLayer');
+  const overlayLayer = document.getElementById('overlayLayer');
+  // clear layers
+  baseLayer.innerHTML = '';
+  overlayLayer.innerHTML = '';
+
   const positions = payload.positions || [];
-  positions.forEach((p, idx) => {
+  positions.forEach((p) => {
     const wrapper = document.createElement('div');
     wrapper.className = 'baseItemWrapper';
     wrapper.style.left = (p.x || 0) + 'px';
@@ -132,9 +157,9 @@ function renderBasePlate(payload) {
     wrapper.style.height = (p.sizePx || 48) + 'px';
     wrapper.style.transform = `translate(-50%,-50%) rotate(${p.rotationDeg||0}deg)`;
     const img = document.createElement('img');
-    // prefer instance override if present, else catalog image (for bread_variant we inferred override in loadBase)
     img.src = (p._imgOverride || (CATALOG[p.id] && CATALOG[p.id].img) || ('images/' + (p.id || 'unknown') + '.svg'));
     img.alt = p.label || p.id || '';
+
     // apply fraction visual: half -> clip-half; quarter/less -> scale visually
     const frac = p.fraction || 1;
     img.style.transform = '';
@@ -145,14 +170,16 @@ function renderBasePlate(payload) {
       const s = Math.max(0.25, Math.min(1, frac));
       img.style.transform = `scale(${s})`;
     }
+
     wrapper.appendChild(img);
-    canvas.appendChild(wrapper);
+    baseLayer.appendChild(wrapper);
   });
 }
 
-// overlays (one per anchor) used for animation
+// create overlay wrappers in overlayLayer for animation
 function createOverlayWrappers() {
-  const canvas = document.getElementById('plateCanvas');
+  const overlayLayer = document.getElementById('overlayLayer');
+  // remove previous overlays
   overlayWrappers.forEach(o => { if (o.wrapper && o.wrapper.parentNode) o.wrapper.parentNode.removeChild(o.wrapper); });
   overlayWrappers = [];
   const positions = basePayload.positions || [];
@@ -171,12 +198,13 @@ function createOverlayWrappers() {
     img.style.transform = 'scale(0.001)';
     img.style.transformOrigin = '50% 50%';
     wrapper.appendChild(img);
-    canvas.appendChild(wrapper);
+    overlayLayer.appendChild(wrapper);
     overlayWrappers.push({ wrapper, img, anchor: p });
   });
   return overlayWrappers;
 }
 
+// animate comparison; targetMap expects grams per id (id -> total grams)
 function animateComparison(targetMap, title, options = {}) {
   if (!basePayload || !basePayload.positions || basePayload.positions.length === 0) {
     alert('No base plate to compare. Build a plate first.');
@@ -184,35 +212,34 @@ function animateComparison(targetMap, title, options = {}) {
   }
   document.getElementById('caption').textContent = title || '';
 
-  // anchors grouped by id
+  // group anchors by id
   const anchorsById = {};
   basePayload.positions.forEach(p => (anchorsById[p.id] = anchorsById[p.id] || []).push(p));
 
-  // targetMap: id -> grams
+  // target grams map
   const targetGramsById = Object.assign({}, targetMap || {});
 
-  // create overlay wrappers
+  // create overlays (in overlayLayer)
   const overlays = createOverlayWrappers();
 
-  // gray base
-  const plateCanvas = document.getElementById('plateCanvas');
-  plateCanvas.style.transition = 'filter 300ms ease, opacity 300ms ease';
-  plateCanvas.style.filter = 'grayscale(1)';
-  plateCanvas.style.opacity = '0.45';
+  // gray baseLayer only
+  const baseLayer = document.getElementById('baseLayer');
+  baseLayer.style.transition = 'filter 300ms ease, opacity 300ms ease';
+  baseLayer.style.filter = 'grayscale(1)';
+  baseLayer.style.opacity = '0.45';
 
   const animateMs = options.animateMs || 900;
   requestAnimationFrame(() => {
     overlays.forEach(o => {
       const anchor = o.anchor;
       const anchorGrams = Math.max(1, anchor.grams || anchor.gramsPerPortion || (CATALOG[anchor.id] && CATALOG[anchor.id].gramsPerPortion) || 100);
-      const targetTotalForId = Math.max(0, targetGramsById[anchor.id] || 0);
-      // if anchor id is 'bread_variant' target might be supplied under 'bread'; try fallback
-      let targetForThis = targetTotalForId;
-      if (anchor.id === 'bread_variant' && (targetGramsById['bread'] || 0) > 0) targetForThis = targetGramsById['bread'];
+      // lookup target for this id; handle bread_variant fallback to 'bread'
+      let targetTotalForId = Math.max(0, targetGramsById[anchor.id] || 0);
+      if (anchor.id === 'bread_variant' && (targetGramsById['bread'] || 0) > 0) targetTotalForId = targetGramsById['bread'];
       const countAnchors = (anchorsById[anchor.id] || []).length || 1;
-      const perAnchorTarget = (countAnchors > 0) ? (targetForThis / countAnchors) : 0;
+      const perAnchorTarget = (countAnchors > 0) ? (targetTotalForId / countAnchors) : 0;
 
-      // compute scale
+      // compute scale from area ratio
       let scale = 0.001;
       if (perAnchorTarget <= 0) {
         scale = 0.001;
@@ -240,7 +267,7 @@ function animateComparison(targetMap, title, options = {}) {
     });
   });
 
-  // show summary after animation
+  // compute diffs and present summary after animation
   setTimeout(() => {
     const diffs = [];
     const anchorTotals = {};
@@ -249,25 +276,32 @@ function animateComparison(targetMap, title, options = {}) {
     allIds.forEach(id => {
       const a = anchorTotals[id] || 0;
       const t = targetGramsById[id] || 0;
+      // bread_variant should also be compared to bread target if provided
+      if (id === 'bread_variant' && (targetGramsById['bread'] || 0) > 0) {
+        // attach as diff under bread_variant but use bread target fallback
+      }
       if (Math.abs(a - t) < 1) return;
-      const pct = a === 0 ? 100 : Math.round(((t - a) / a) * 100);
+      const pct = a === 0 ? (t > 0 ? 100 : 0) : Math.round(((t - a) / Math.max(1,a)) * 100);
       diffs.push({ id, a, t, pct });
     });
     diffs.sort((x,y) => Math.abs(y.pct) - Math.abs(x.pct));
-    const top = diffs.slice(0,6).map(d => `${d.id}: ${Math.round(d.a)}g→${Math.round(d.t)}g (${d.pct>0?'+':''}${d.pct}%)`);
+    const top = diffs.slice(0,6).map(d => {
+      const pctLabel = d.a === 0 ? (d.t>0 ? '+100%' : '0%') : ((d.t - d.a)>=0 ? '+' : '') + Math.round(((d.t - d.a)/Math.max(1,d.a))*100) + '%';
+      return `${d.id}: ${Math.round(d.a)}g→${Math.round(d.t)}g (${pctLabel})`;
+    });
     document.getElementById('caption').textContent = (title ? title + ': ' : '') + (top.length ? top.join('; ') : 'No significant changes');
 
     // cleanup overlays after show
     setTimeout(() => {
       overlayWrappers.forEach(o => { if (o.wrapper && o.wrapper.parentNode) o.wrapper.parentNode.removeChild(o.wrapper); });
       overlayWrappers = [];
-      plateCanvas.style.filter = '';
-      plateCanvas.style.opacity = '';
+      baseLayer.style.filter = '';
+      baseLayer.style.opacity = '';
     }, 2200);
   }, animateMs + 120);
 }
 
-// helper portions->grams map using catalog
+// helper: convert portions (map id->portions) to grams using catalog
 function portionsToGramsMap(portionsMap) {
   const grams = {};
   Object.keys(portionsMap||{}).forEach(id => {
@@ -277,6 +311,7 @@ function portionsToGramsMap(portionsMap) {
   return grams;
 }
 
+// recommended (Finland) example portions -> grams
 const recommendedCountsFinland_portions = { carrot:2, apple:1, potato:1, bread:0, sausage:1, milk:1, water:1 };
 const recommendedCountsFinland_grams = portionsToGramsMap(recommendedCountsFinland_portions);
 
@@ -285,8 +320,6 @@ document.getElementById('backBtn').addEventListener('click', ()=> history.back()
 document.getElementById('cmpRecommendedBtn').addEventListener('click', ()=> {
   animateComparison(recommendedCountsFinland_grams, 'Recommended (Finland) vs Estimate', { animateMs: 900 });
 });
-
-// cmpRealityBtn prompts for a JSON mapping or falls back to recommended
 document.getElementById('cmpRealityBtn').addEventListener('click', ()=> {
   const raw = prompt('Enter target grams JSON mapping (e.g. { "potato": 200, "apple": 100 }) — leave empty to use recommended');
   let target = null;
@@ -297,9 +330,8 @@ document.getElementById('cmpRealityBtn').addEventListener('click', ()=> {
   animateComparison(target, 'Reality vs Estimate', { animateMs: 900 });
 });
 
-// load
+// initial load
 loadBase();
-
 </script>
 </body>
 </html>
