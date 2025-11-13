@@ -3,391 +3,317 @@
 <head>
 <meta charset="utf-8"/>
 <title>Compare Plate</title>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
 <style>
   body{font-family:Arial;margin:14px;background:#f6f6f7}
-  .topbar{display:flex;gap:12px;align-items:center}
+  .topbar{display:flex;gap:12px;align-items:center;justify-content:center;margin-bottom:10px}
   .btn{padding:8px 12px;border-radius:6px;border:1px solid #bbb;background:#fff;cursor:pointer}
-  #stage{position:relative;width:760px;height:520px;margin:18px auto;border-radius:8px;background:#fff;padding:16px;box-shadow:0 6px 22px rgba(0,0,0,0.08)}
+  #stage{position:relative;width:760px;height:520px;margin:6px auto;border-radius:8px;background:#fff;padding:16px;box-shadow:0 6px 22px rgba(0,0,0,0.08)}
   #plateWrapper{position:relative;width:420px;height:420px;margin:0 auto}
   #plateCanvas{position:relative;width:420px;height:420px;border-radius:50%;background:#fff6e6;border:8px solid #eee;overflow:visible}
-  .baseItem{position:absolute;transform:translate(-50%,-50%);opacity:1;filter:none;transition:filter 300ms ease, opacity 300ms ease}
-  .overlayItem{position:absolute;transform:translate(-50%,-50%) scale(1);transition:transform 700ms cubic-bezier(.2,.9,.2,1), opacity 500ms ease;opacity:1}
+  .baseItemWrapper{position:absolute; transform:translate(-50%,-50%); pointer-events:none;}
+  .baseItemWrapper img{display:block;width:100%;height:100%;object-fit:contain}
+  .overlayWrapper{position:absolute; transform:translate(-50%,-50%); pointer-events:none; transition: opacity 300ms ease}
+  .overlayWrapper img{display:block;width:100%;height:100%;object-fit:contain; pointer-events:none}
+  .clip-half { -webkit-clip-path: polygon(0 0, 100% 100%, 0 100%); clip-path: polygon(0 0, 100% 100%, 0 100%); }
   #caption{margin-top:12px;text-align:center;font-size:14px}
   #controls{width:760px;margin:10px auto;text-align:center}
   select{padding:6px}
+  .small{font-size:13px;color:#444}
+  .hidden{display:none}
 </style>
 </head>
 <body>
-  <div class="topbar" style="justify-content:center">
+  <div class="topbar">
     <button id="backBtn" class="btn">Back</button>
-    <button id="cmpRecommendedBtn" class="btn">Compare to Recommended</button>
-    <button id="cmpRealityBtn" class="btn">Compare to Reality (pick)</button>
-    <select id="pastSelect" class="btn"></select>
-    <button id="playAll" class="btn">Play sequence</button>
+    <button id="cmpRecommendedBtn" class="btn">Compare to Recommended (Finland)</button>
+    <button id="cmpRealityBtn" class="btn">Compare to Reality (custom)</button>
+    <div id="status" class="small" style="margin-left:8px"></div>
   </div>
 
   <div id="stage">
     <div id="plateWrapper">
       <div id="plateCanvas"></div>
     </div>
-    <div id="caption"></div>
+    <div id="caption" class="small"></div>
   </div>
 
 <script>
-const WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbxEpMGjGgkn8a7_RG0-fSyPj-IZny88ZChcqtQ_ks1ALOv0bxrKYTmLy8pSjx0A5euX5A/exec'; // use your URL
-const PLATE_DIAMETER = 420; // canvas size here
+/*
+ compare.html
+ - reads session fallback from sessionStorage key 'plate_positions_fallback' (same as index.html writes)
+ - anchor instances in payload.positions must include: id, grams, gramsPerPortion (optional), x, y, sizePx, rotationDeg, placement, sideSlot, fraction (optional)
+ - overlay animation uses grams to compute scale: scale = sqrt(targetGramsPerAnchor / anchorGrams)
+ - half fractions are displayed as diagonal clipped halves (CSS), quarter fractions are shown scaled down
+*/
+
+const WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbxEpMGjGgkn8a7_RG0-fSyPj-IZny88ZChcqtQ_ks1ALOv0bxrKYTmLy8pSjx0A5euX5A/exec';
+const PLATE_DIAMETER = 420; // canvas in pixels
 
 function qs(name) { const u = new URL(location.href); return u.searchParams.get(name); }
 
 let basePayload = null; // will hold session payload including positions
-let overlayElements = []; // DOM elements for overlay items
+let overlayWrappers = []; // for cleanup
 
-async function fetchSession(sessionId) {
-  const res = await fetch(WEB_APP_URL + '?mode=session&sessionId=' + encodeURIComponent(sessionId));
-  if (!res.ok) throw new Error('session fetch failed');
-  const json = await res.json();
-  return json && json.payload ? json.payload : null;
-}
-async function fetchRecommended() {
-  const res = await fetch(WEB_APP_URL + '?mode=summary');
-  if (!res.ok) throw new Error('summary fetch failed');
-  return await res.json();
-}
-async function fetchPastList() {
-  const res = await fetch(WEB_APP_URL + '?mode=sessions');
-  if (!res.ok) throw new Error('sessions fetch failed');
-  return await res.json();
-}
-
-/* ------------------ OWID reality fetch + mapping ------------------
-   Usage:
-     // compare country FIN
-     fetchAndCompareReality('FIN').catch(err=>console.error(err));
-     // or populate a country selector and call fetchAndCompareReality(code)
------------------------------------------------------------------- */
-
-const OWID_COUNTRY_MAP = { FIN: 'Finland', GBR: 'United Kingdom', TZA: 'Tanzania', 'Eastern Asia (FAO)': 'Eastern Asia (FAO)' };
-// adjust/add other mappings as needed
-
-// kcal per portion in your app (tweak if your SIZE_MAP changed)
-const KCAL_PER_ITEM = { bread: 80, potato: 160, sausage: 250, milk: 150, cheese: 110, apple: 95, carrot: 25, water: 0 };
-
-// A simple default allocation of lunch kcal into items (fractions of the lunch kcal).
-// Tweak these fractions to better reflect typical diets for the country; they must sum to ~1.0 (or less; remaining goes to 'other').
-const DEFAULT_LUNCH_ALLOCATION = {
-  bread: 0.28,    // cereals / grains
-  potato: 0.12,   // roots & tubers
-  sausage: 0.25,  // meat / protein
-  milk: 0.15,     // dairy
-  fruitsveg: 0.18 // fruits + vegetables (we'll split into apple/carrot below)
+// minimal local catalog to resolve images and gramsPerPortion when needed (should match index.html)
+const CATALOG = {
+  potato: { img:'images/potato.svg', gramsPerPortion:150 },
+  sausage: { img:'images/sausage.svg', gramsPerPortion:75 },
+  carrot: { img:'images/carrot.svg', gramsPerPortion:75 },
+  bread: { img:'images/slice-of-bread.svg', gramsPerPortion:40 },
+  apple: { img:'images/apple.svg', gramsPerPortion:150 },
+  water: { img:'images/glass-of-water.svg', gramsPerPortion:200 },
+  milk: { img:'images/milk-carton.svg', gramsPerPortion:250 },
+  // bread_variant images may be present in instance._imgOverride
 };
 
-function parseCSV(text) {
-  // Minimal CSV parser: returns array of rows (array of cells)
-  return text.trim().split('\n').map(r => {
-    // rudimentary handling for quoted cells
-    const cells = [];
-    let cur = '', inQ = false;
-    for (let i=0;i<r.length;i++){
-      const ch = r[i];
-      if (ch === '"' ) { inQ = !inQ; continue; }
-      if (ch === ',' && !inQ) { cells.push(cur); cur=''; continue; }
-      cur += ch;
-    }
-    cells.push(cur);
-    return cells;
-  });
-}
-
-async function fetchOWIDTotalKcalForCountry(entityName) {
-  // fetch CSV for the chart; include entityName via country param (OWID uses entity names)
-  const url = 'https://ourworldindata.org/grapher/daily-per-capita-caloric-supply.csv?country=' + encodeURIComponent(entityName);
-  const res = await fetch(url);
-  if (!res.ok) throw new Error('OWID fetch failed: ' + res.status);
-  const txt = await res.text();
-  const rows = parseCSV(txt);
-  const header = rows.shift();
-  // header likely contains: "Year","Entity","Code","Daily supply of calories per person (kcal)"
-  const idxEntity = header.findIndex(h => /entity|country/i.test(h));
-  const idxYear = header.findIndex(h => /year/i.test(h));
-  const idxValue = header.findIndex(h => /calor/i.test(h));
-  if (idxEntity < 0 || idxYear < 0 || idxValue < 0) {
-    // fallback: try typical positions
-    // throw an error to signal unexpected CSV layout
-    throw new Error('Unexpected OWID CSV format; header: ' + header.join('|'));
-  }
-  // collect year->value for the requested entity
-  const vals = {};
-  rows.forEach(cells => {
-    const ent = cells[idxEntity];
-    if (ent !== entityName) return;
-    const year = cells[idxYear];
-    const v = parseFloat(cells[idxValue]) || 0;
-    vals[year] = v;
-  });
-  const years = Object.keys(vals).map(y=>Number(y)).sort((a,b)=>b-a);
-  if (!years.length) return null;
-  const latestYear = years[0];
-  return { year: latestYear, kcalPerDay: vals[String(latestYear)] };
-}
-
-function mapLunchKcalToCounts(lunchKcal, allocation = DEFAULT_LUNCH_ALLOCATION) {
-  // allocate lunch kcal to items and turn into integer portion counts
-  const counts = {};
-  const fruitsvegKcal = (allocation.fruitsveg || 0) * lunchKcal;
-  const fvSplit = 0.5; // split fruitsveg kcal half to fruits (apple), half to veg (carrot)
-  const byItemKcal = {
-    bread: (allocation.bread || 0) * lunchKcal,
-    potato: (allocation.potato || 0) * lunchKcal,
-    sausage: (allocation.sausage || 0) * lunchKcal,
-    milk: (allocation.milk || 0) * lunchKcal,
-    apple: fruitsvegKcal * fvSplit,
-    carrot: fruitsvegKcal * (1 - fvSplit),
-    water: 0
-  };
-  Object.entries(byItemKcal).forEach(([item, kcal]) => {
-    const per = KCAL_PER_ITEM[item] || 100;
-    const raw = (kcal / per);
-    // make small non-zero portions show as 1 rather than 0 when kcal>0
-    counts[item] = (kcal > 0 && raw > 0 && raw < 0.5) ? 1 : Math.round(raw);
-    if (!isFinite(counts[item]) || counts[item] < 0) counts[item] = 0;
-  });
-  return counts;
-}
-
-async function fetchAndCompareReality(countryCode = 'FIN') {
-  try {
-    const entity = OWID_COUNTRY_MAP[countryCode] || countryCode;
-    const result = await fetchOWIDTotalKcalForCountry(entity);
-    if (!result) { alert('No OWID data for ' + entity); return; }
-    const daily = result.kcalPerDay;
-    // estimate lunch as one third of daily supply
-    const lunch = daily / 3;
-    const counts = mapLunchKcalToCounts(lunch);
-    const title = `Reality (approx) ${entity} ${result.year}: ${Math.round(daily)} kcal/day, lunch ≈ ${Math.round(lunch)} kcal`;
-    animateComparison(counts, title);
-  } catch (err) {
-    console.error('fetchAndCompareReality error', err);
-    alert('Failed to fetch reality data: ' + (err.message || err));
-  }
-}
-
-// load initial session: from URL sessionId or fallback sessionStorage
+// load base payload (from sessionStorage fallback or from server if sessionId provided)
 async function loadBase() {
   const sid = qs('sessionId');
   if (sid) {
-    basePayload = await fetchSession(sid);
-  } else {
+    try {
+      // fetch session payload from server (server expected to return { payload: {...} })
+      const res = await fetch(WEB_APP_URL + '?mode=session&sessionId=' + encodeURIComponent(sid));
+      if (res.ok) {
+        const json = await res.json().catch(()=>null);
+        if (json && json.payload) basePayload = json.payload;
+      }
+    } catch(e){ console.warn('session fetch failed', e); }
+  }
+  if (!basePayload) {
     const fallback = sessionStorage.getItem('plate_positions_fallback');
     if (fallback) basePayload = JSON.parse(fallback);
   }
   if (!basePayload) {
-    alert('No session found. Return to build page and save a session.');
+    alert('No base session found. Please build a plate and click Compare from the build page.');
     return;
   }
+  // normalize positions: ensure each anchor has gramsPerPortion & fraction fields
+  (basePayload.positions || []).forEach(p => {
+    if (!p.gramsPerPortion) {
+      const cat = CATALOG[p.id] || {};
+      p.gramsPerPortion = p.gramsPerPortion || cat.gramsPerPortion || 100;
+    }
+    if (!('fraction' in p)) {
+      p.fraction = (p.grams && p.gramsPerPortion) ? Math.round((p.grams / p.gramsPerPortion) * 100) / 100 : 1;
+    }
+    // some instances created by bread variant use id 'bread_variant' but have _imgOverride in payload; keep as is
+  });
   renderBasePlate(basePayload);
-  populatePastSelect();
 }
 
-// render the anchored base plate exactly using positions in basePayload.positions
+// render anchored base plate: show base items (normal color)
 function renderBasePlate(payload) {
   const canvas = document.getElementById('plateCanvas');
   canvas.innerHTML = '';
-  // background base: draw each saved position as a faded baseItem
   const positions = payload.positions || [];
-  positions.forEach(p => {
+  positions.forEach((p, idx) => {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'baseItemWrapper';
+    wrapper.style.left = (p.x || 0) + 'px';
+    wrapper.style.top = (p.y || 0) + 'px';
+    wrapper.style.width = (p.sizePx || 48) + 'px';
+    wrapper.style.height = (p.sizePx || 48) + 'px';
+    wrapper.style.transform = `translate(-50%,-50%) rotate(${p.rotationDeg||0}deg)`;
+    // pick image from instance override or catalog
     const img = document.createElement('img');
-    img.src = (p.id && ('images/' + p.id + '.svg')) || '';
-    img.className = 'baseItem';
-    img.style.left = p.x + 'px';
-    img.style.top = p.y + 'px';
-    img.style.width = (p.sizePx || 48) + 'px';
-    img.style.height = (p.sizePx || 48) + 'px';
-    img.style.transform = `translate(-50%,-50%) rotate(${p.rotationDeg||0}deg)`;
-    canvas.appendChild(img);
-  });
-  // remember anchor positions for overlay math
-  basePayload._anchorMap = {};
-  positions.forEach(p => {
-    basePayload._anchorMap[p.id] = basePayload._anchorMap[p.id] || [];
-    basePayload._anchorMap[p.id].push(p);
+    img.src = (p._imgOverride || (CATALOG[p.id] && CATALOG[p.id].img) || ('images/' + (p.id || 'unknown') + '.svg'));
+    img.alt = p.label || p.id || '';
+    // visual: if fraction is 0.5, show clipped half on base too (base view shows actual saved portion)
+    if (Math.abs((p.fraction||1) - 0.5) < 0.001) {
+      img.classList.add('clip-half');
+    } else if ((p.fraction||1) < 0.5) {
+      // quarter/smaller: scale the inner img
+      const scale = Math.max(0.25, Math.min(1, p.fraction));
+      img.style.transform = `scale(${scale})`;
+    }
+    wrapper.appendChild(img);
+    canvas.appendChild(wrapper);
   });
 }
-document.getElementById('cmpRealityBtn').addEventListener('click', () => {
-  const sel = document.getElementById('pastSelect'); // reuse or add a country select
-  const code = sel && sel.value ? sel.value : 'FIN';
-  fetchAndCompareReality(code);
-});
 
-// create overlay items (one DOM element per anchor position) and return array
-function createOverlayElements() {
+// create overlay wrappers (one per anchor) for animation; returns array of { wrapper, anchor }
+function createOverlayWrappers() {
   const canvas = document.getElementById('plateCanvas');
-  // remove previous overlay elements
-  document.querySelectorAll('.overlayItem').forEach(n=>n.remove());
-  overlayElements = [];
+  // remove any previous overlays
+  overlayWrappers.forEach(o => { if (o.wrapper && o.wrapper.parentNode) o.wrapper.parentNode.removeChild(o.wrapper); });
+  overlayWrappers = [];
   const positions = basePayload.positions || [];
-  positions.forEach(p => {
+  positions.forEach((p, idx) => {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'overlayWrapper';
+    wrapper.style.left = (p.x || 0) + 'px';
+    wrapper.style.top = (p.y || 0) + 'px';
+    wrapper.style.width = (p.sizePx || 48) + 'px';
+    wrapper.style.height = (p.sizePx || 48) + 'px';
+    wrapper.style.transform = `translate(-50%,-50%) rotate(${p.rotationDeg||0}deg)`;
+    wrapper.style.opacity = '0';
     const img = document.createElement('img');
-    img.src = (p.id && ('images/' + p.id + '.svg')) || '';
-    img.className = 'overlayItem';
-    img.style.left = p.x + 'px';
-    img.style.top = p.y + 'px';
-    img.style.width = (p.sizePx || 48) + 'px';
-    img.style.height = (p.sizePx || 48) + 'px';
-    img.style.transform = `translate(-50%,-50%) scale(1) rotate(${p.rotationDeg||0}deg)`;
-    img.style.opacity = '0';
-    canvas.appendChild(img);
-    overlayElements.push({ el: img, id: p.id, anchor: p });
+    img.src = (p._imgOverride || (CATALOG[p.id] && CATALOG[p.id].img) || ('images/' + (p.id || 'unknown') + '.svg'));
+    img.alt = p.label || p.id || '';
+    // start tiny so it can pop in; but for half we will apply clip and show full-size
+    img.style.transform = 'scale(0.001)';
+    img.style.transformOrigin = '50% 50%';
+    wrapper.appendChild(img);
+    canvas.appendChild(wrapper);
+    overlayWrappers.push({ wrapper, img, anchor: p });
   });
-  return overlayElements;
+  return overlayWrappers;
 }
 
-// Finland-aligned recommended lunch (approximation based on Ruokavirasto guidance, lunch ~= 1/3 daily)
+// animate comparison: targetMap is object id -> total target grams (not portions)
+// If you have target portions, convert to grams before calling here.
+// title is displayed in caption.
+function animateComparison(targetMap, title, options = {}) {
+  if (!basePayload || !basePayload.positions || basePayload.positions.length === 0) {
+    alert('No base plate to compare. Build a plate first.');
+    return;
+  }
+  const captionEl = document.getElementById('caption');
+  captionEl.textContent = title || '';
 
-
-// animate overlay to represent targetCounts (object id->count). Items are anchored, they DO NOT move.
-// scaling: find anchorCount per id (how many anchors exist for that id), then compute target total instances for id,
-// compute per-anchor scale = sqrt(targetInstances / anchorCount) or 0 if target is 0.
-function animateComparison(targetCounts, title) {
-  document.querySelectorAll('.baseItem').forEach(el => {
-    el.style.filter = 'none';
-    el.style.opacity = '1';
-  });
-  const caption = document.getElementById('caption');
-  caption.textContent = title || '';
+  // Build anchor counts by id: gather anchors per id and their total grams
   const anchorsById = {};
-  basePayload.positions.forEach(p => (anchorsById[p.id] = anchorsById[p.id] || []).push(p));
-  const overlay = createOverlayElements();
-  // set initial opacity and scale to 0.001 so they pop in at correct anchor
-  overlay.forEach(o => { o.el.style.opacity = '1'; o.el.style.transform = `translate(-50%,-50%) scale(0.001) rotate(${o.anchor.rotationDeg||0}deg)`; });
-
-  // compute target instances count per id (rounding rules: use provided count or fallback to Math.round(avg))
-  // targetCounts is an object id->count (numbers)
-  document.querySelectorAll('.baseItem').forEach(el => {
-    el.style.filter = 'grayscale(1)';
-    el.style.opacity = '0.45';
+  basePayload.positions.forEach(p => {
+    anchorsById[p.id] = anchorsById[p.id] || [];
+    anchorsById[p.id].push(p);
   });
+
+  // Build target grams map per id (if targetMap contains portions convert externally)
+  const targetGramsById = {};
+  Object.keys(targetMap || {}).forEach(id => {
+    targetGramsById[id] = targetMap[id] || 0;
+  });
+
+  // create overlay wrappers
+  const overlays = createOverlayWrappers();
+
+  // grayscale base plate (fade) just before animation
+  const plateCanvas = document.getElementById('plateCanvas');
+  plateCanvas.style.transition = 'filter 300ms ease, opacity 300ms ease';
+  plateCanvas.style.filter = 'grayscale(1)';
+  plateCanvas.style.opacity = '0.45';
+
+  // compute per-anchor target grams: if there are N anchors for id, allocate target total grams evenly across anchors
   const anchorCountById = {};
-  Object.keys(anchorsById).forEach(id=> anchorCountById[id] = anchorsById[id].length);
+  Object.keys(anchorsById).forEach(id => anchorCountById[id] = anchorsById[id].length);
 
-  // For each overlay element, compute scale
-  overlay.forEach(o => {
-    const id = o.id;
-    const anchorCount = anchorCountById[id] || 1;
-    const targetInstances = Math.max(0, targetCounts[id] || 0);
-    // ratio area-based -> sqrt
-    const ratio = anchorCount === 0 ? (targetInstances > 0 ? targetInstances : 0) : (targetInstances / anchorCount);
-    let scale = Math.sqrt(Math.max(0.0001, ratio));
-    // clamp for visual sanity
-    scale = Math.max(0.25, Math.min(2.6, scale));
-    // gray the base template now so comparison overlay stands out
-    document.querySelectorAll('.baseItem').forEach(el => {
-      el.style.filter = 'grayscale(1)';
-      el.style.opacity = '0.45';
+  // animate overlays: for each overlay wrapper, compute anchorGrams and per-anchor targetGrams then scale
+  const animateMs = options.animateMs || 900;
+  requestAnimationFrame(() => {
+    overlays.forEach(o => {
+      const anchor = o.anchor;
+      const anchorGrams = Math.max(1, anchor.grams || anchor.gramsPerPortion || (CATALOG[anchor.id] && CATALOG[anchor.id].gramsPerPortion) || 100);
+      const targetTotalGrams = Math.max(0, targetGramsById[anchor.id] || 0);
+      const countAnchors = anchorCountById[anchor.id] || 1;
+      const perAnchorTarget = (countAnchors > 0) ? (targetTotalGrams / countAnchors) : 0;
+      // compute scale factor via area ratio: scale = sqrt(target / anchor)
+      let scale = 0.001;
+      if (perAnchorTarget <= 0) {
+        scale = 0.001; // effectively invisible
+      } else {
+        scale = Math.sqrt(Math.max(0.0001, perAnchorTarget / anchorGrams));
+      }
+      scale = Math.max(0.12, Math.min(3.0, scale));
+
+      // Apply fraction visual rules for overlay element (mirror base's fraction but animate to target scale)
+      const fraction = anchor.fraction || Math.round((anchor.grams / (anchor.gramsPerPortion || 1)) * 100) / 100;
+      // For half anchors we want the overlay image clipped diagonally (top-left->bottom-right) and then scaled by the computed scale factor.
+      // For quarter anchors we show a smaller scaled image.
+      if (Math.abs(fraction - 0.5) < 0.001) {
+        o.img.classList.add('clip-half');
+        // animate from tiny clip to target (we don't change clip during animation)
+        o.img.style.transform = `scale(${Math.max(0.6, Math.min(scale, 1.6))})`;
+      } else if (fraction < 0.5) {
+        o.img.classList.remove('clip-half');
+        const innerScale = Math.max(0.25, Math.min(scale, 1.8));
+        o.img.style.transform = `scale(${innerScale})`;
+      } else {
+        o.img.classList.remove('clip-half');
+        o.img.style.transform = `scale(${Math.max(0.6, Math.min(scale, 1.8))})`;
+      }
+      o.wrapper.style.opacity = '1';
+      // add transition to match animateMs
+      o.img.style.transition = `transform ${animateMs}ms cubic-bezier(.2,.9,.2,1), opacity ${animateMs}ms ease`;
+      // if perAnchorTarget is zero, fade out; else ensure visible
+      o.wrapper.style.opacity = perAnchorTarget > 0 ? '1' : '0.0';
     });
-    // apply transform after tiny delay to ensure transition
-    setTimeout(()=> {
-      o.el.style.transform = `translate(-50%,-50%) scale(${scale}) rotate(${o.anchor.rotationDeg||0}deg)`;
-      o.el.style.opacity = '1';
-    }, 40);
   });
 
-  // show summary text under plate
-  setTimeout(()=> {
-    // compute diffs
+  // compute diffs and show summary after animation
+  setTimeout(() => {
     const diffs = [];
-    const allIds = new Set([...Object.keys(anchorCountById), ...Object.keys(targetCounts)]);
-    allIds.forEach(id=>{
-      const a = anchorCountById[id] || 0;
-      const t = targetCounts[id] || 0;
-      if (a === t) return;
+    const anchorTotals = {};
+    basePayload.positions.forEach(p => { anchorTotals[p.id] = (anchorTotals[p.id]||0) + (p.grams || p.gramsPerPortion || 0); });
+    const allIds = new Set([...Object.keys(anchorTotals), ...Object.keys(targetGramsById)]);
+    allIds.forEach(id => {
+      const a = anchorTotals[id] || 0;
+      const t = targetGramsById[id] || 0;
+      if (Math.abs(a - t) < 1) return; // ignore tiny diffs
       const pct = a === 0 ? 100 : Math.round(((t - a) / a) * 100);
       diffs.push({ id, a, t, pct });
     });
-    diffs.sort((x,y)=> Math.abs(y.pct) - Math.abs(x.pct));
-    const top = diffs.slice(0,5).map(d => `${d.id}: ${d.a}→${d.t} (${d.pct>0?'+':''}${d.pct}%)`);
-    caption.textContent = (title ? title + ' — ' : '') + (top.length ? top.join('; ') : 'No changes');
-  }, 900);
+    diffs.sort((x,y) => Math.abs(y.pct) - Math.abs(x.pct));
+    const top = diffs.slice(0,6).map(d => `${d.id}: ${Math.round(d.a)}g→${Math.round(d.t)}g (${d.pct>0?'+':''}${d.pct}%)`);
+    const captionEl = document.getElementById('caption');
+    captionEl.textContent = (title ? title + ': ' : '') + (top.length ? top.join('; ') : 'No significant changes');
 
+    // cleanup after show
+    setTimeout(() => {
+      // remove overlays
+      overlayWrappers.forEach(o => { if (o.wrapper && o.wrapper.parentNode) o.wrapper.parentNode.removeChild(o.wrapper); });
+      overlayWrappers = [];
+      // restore base plate look
+      plateCanvas.style.filter = '';
+      plateCanvas.style.opacity = '';
+      // done
+    }, 2200);
+  }, (options.animateMs || 900) + 120);
 }
-const recommendedCountsFinlandLunch = {
-  // vegetables & fruits (split veg 60% veg, 40% fruit of the lunch veg+fruit budget)
-  carrot: 2,     // ~2 carrots (vegetable portions)
-  apple: 1,      // 1 medium apple (fruit portion)
-  // staple: one or two starchy portions (potato or bread)
-  potato: 1,     // 1 medium potato OR
-  bread: 1,      // 1 slice (either/or; counts can combine)
-  // protein and dairy
-  sausage: 1,    // 1 small protein portion (prefer plant/lean proteins in reality)
-  milk: 1,       // 1 small milk/dairy portion
-  // extras / hydration
+
+// Helper: convert a recommendedCounts in portions to grams by using CATALOG gramsPerPortion
+function portionsToGramsMap(portionsMap) {
+  const gramsMap = {};
+  Object.keys(portionsMap || {}).forEach(id => {
+    const gramsPer = (CATALOG[id] && CATALOG[id].gramsPerPortion) || 100;
+    gramsMap[id] = (portionsMap[id] || 0) * gramsPer;
+  });
+  return gramsMap;
+}
+
+// Example recommendedCounts (Finland) — use same conservative mapping you chose in index.html
+const recommendedCountsFinlandLunch_portions = {
+  carrot: 2,
+  apple: 1,
+  potato: 1,
+  bread: 0,
+  sausage: 1,
+  milk: 1,
   water: 1
 };
-
-// helpers to convert recommended/session payloads into id->count maps
-function itemsArrayToCounts(items) {
-  const map = {};
-  (items||[]).forEach(it => { map[it.id] = (map[it.id]||0) + (it.count||1); });
-  return map;
-}
+const recommendedCountsFinlandLunch_grams = portionsToGramsMap(recommendedCountsFinlandLunch_portions);
 
 // UI wiring
-document.getElementById('backBtn').addEventListener('click', ()=> { window.location.href = 'index.html'; });
-
-document.getElementById('cmpRecommendedBtn').addEventListener('click', async () => {
-  // pick region: use FIN mapping for Finland; in a full app you'd switch by selected country
-  const recommended = recommendedCountsFinlandLunch;
-  animateComparison(recommended, 'Recommended (Finland) vs Estimate');
+document.getElementById('backBtn').addEventListener('click', ()=> { history.back(); });
+document.getElementById('cmpRecommendedBtn').addEventListener('click', ()=> {
+  animateComparison(recommendedCountsFinlandLunch_grams, 'Recommended (Finland) vs Estimate', { animateMs: 900 });
 });
 
-document.getElementById('pastSelect').addEventListener('change', ()=>{/* nothing: wait for manual compare */});
-
-document.getElementById('cmpRealityBtn').addEventListener('click', async ()=> {
-  const sel = document.getElementById('pastSelect');
-  if (!sel || !sel.value) { alert('Pick a session from the selector'); return; }
-  try {
-    const payload = await fetchSession(sel.value);
-    if (!payload) { alert('No payload returned'); return; }
-    const counts = itemsArrayToCounts(payload.items || []);
-    animateComparison(counts, 'Reality vs Estimate');
-  } catch (err) {
-    console.error(err); alert('Failed to fetch session');
+// cmpRealityBtn remains generic: it expects you to pass target grams by id.
+// For demonstration it prompts for a JSON mapping or falls back to recommended.
+document.getElementById('cmpRealityBtn').addEventListener('click', ()=> {
+  const raw = prompt('Enter target grams JSON mapping (e.g. { "potato": 200, "apple": 100 }) — leave empty to use recommended');
+  let target = null;
+  if (!raw) target = recommendedCountsFinlandLunch_grams;
+  else {
+    try { target = JSON.parse(raw); } catch(e) { alert('Invalid JSON'); return; }
   }
+  animateComparison(target, 'Reality vs Estimate', { animateMs: 900 });
 });
 
-// Play sequence button: recommended -> reality (selected) -> previous selected (if any)
-document.getElementById('playAll').addEventListener('click', async ()=> {
-  // recommended
-  document.getElementById('cmpRecommendedBtn').click();
-  await new Promise(r=>setTimeout(r, 2400));
-  // reality (selected)
-  const sel = document.getElementById('pastSelect');
-  if (sel && sel.value) {
-    document.getElementById('cmpRealityBtn').click();
-    await new Promise(r=>setTimeout(r, 2400));
-  }
-});
-
-// populate past select
-async function populatePastSelect() {
-  try {
-    const res = await fetch(WEB_APP_URL + '?mode=sessions');
-    if (!res.ok) throw new Error('sessions fetch failed');
-    const json = await res.json();
-    const sel = document.getElementById('pastSelect');
-    sel.innerHTML = '';
-    (json.sessions||[]).forEach(s=>{
-      const opt = document.createElement('option');
-      opt.value = s.sessionId;
-      opt.textContent = `${s.label || s.sessionId} — ${s.timestamp || ''}`;
-      sel.appendChild(opt);
-    });
-  } catch (err) {
-    console.warn('populatePastSelect', err);
-  }
-}
-
+// load on open
 loadBase();
+
 </script>
 </body>
 </html>
