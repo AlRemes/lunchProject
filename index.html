@@ -31,9 +31,7 @@
   .placed-wrapper { transform-origin:50% 50%; pointer-events:auto; position:absolute; }
   .placed-wrapper img { display:block; width:100%; height:100%; object-fit:contain; pointer-events:none; }
   .side-placed-wrapper { position:absolute; }
-  /* clipped half: top-left to bottom-right diagonal */
   .clip-half { -webkit-clip-path: polygon(0 0, 100% 100%, 0 100%); clip-path: polygon(0 0, 100% 100%, 0 100%); }
-  /* fraction badge exists but we keep it hidden on plate (available if you want to enable) */
   .fraction-badge { display:none; position:absolute; right:4px; bottom:4px; background:rgba(0,0,0,0.65); color:#fff; font-size:11px; padding:2px 6px; border-radius:9px; pointer-events:none; box-shadow:0 1px 3px rgba(0,0,0,0.25); font-weight:600; z-index:5; }
   #controls{margin-top:12px}
   button{padding:8px 12px;border-radius:6px;border:1px solid #bbb;background:#fff;cursor:pointer}
@@ -75,7 +73,6 @@
 window.addEventListener('DOMContentLoaded', () => {
 
 // CONFIG
-const WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbxEpMGjGgkn8a7_RG0-fSyPj-IZny88ZChcqtQ_ks1ALOv0bxrKYTmLy8pSjx0A5euX5A/exec';
 const PLATE_DIAMETER = 480;
 const SIZE_MAP = {
   potato: 100,
@@ -87,7 +84,7 @@ const SIZE_MAP = {
   milk: 62
 };
 
-const state = { placedInstances: [] }; // grams-aware placed entries
+const state = { placedInstances: [], totalCalories: 0 }; // grams-aware placed entries + totalCalories
 
 // CATALOG — no separate bread_butter or bread_butter_cheese entries
 const FOOD_CATALOG = [
@@ -342,7 +339,7 @@ function renderPlate(){
     wrapper.addEventListener('click', ()=> { state.placedInstances.splice(idx,1); renderPlate(); updateSummary(); });
     wrapper.appendChild(innerImg);
 
-    // badge is intentionally hidden on plate per request (uncomment if needed)
+    // badge hidden on plate per request
     // if (fraction !== 1) { const badge = document.createElement('div'); badge.className='fraction-badge'; badge.textContent = (fraction===0.5?'1/2':(fraction===0.25?'1/4':fraction.toString())); wrapper.appendChild(badge); }
 
     if (inst.placement === 'onplate') {
@@ -366,7 +363,11 @@ function renderPlate(){
 // SUMMARY / CLEAR
 function updateSummary() {
   const sumDiv = document.getElementById('summary');
-  if(state.placedInstances.length === 0) { sumDiv.innerHTML = '<div class="small">Plate is empty</div>'; return; }
+  if(state.placedInstances.length === 0) {
+    sumDiv.innerHTML = '<div class="small">Plate is empty</div>';
+    state.totalCalories = 0;
+    return;
+  }
   const agg = {}; let totalKcal = 0; let totalGrams = 0;
   state.placedInstances.forEach(it=>{
     const key = it.id === 'bread_variant' ? (it.label || 'Bread (variant)') : it.label;
@@ -385,6 +386,9 @@ function updateSummary() {
   });
   html += '</ul>';
   sumDiv.innerHTML = html;
+
+  // store latest total calories in state for payload use
+  state.totalCalories = totalKcal;
 }
 
 document.getElementById('clear').addEventListener('click', ()=> { state.placedInstances = []; renderPlate(); updateSummary(); });
@@ -395,7 +399,12 @@ document.getElementById('submit').addEventListener('click', ()=> {
     name: document.getElementById('name').value || '',
     timestamp: new Date().toISOString(),
     sessionLabel: 'Local session',
-    positions: state.placedInstances.map(it => ({ id: it.id, label: it.label, grams: it.grams, x: it.x, y: it.y, sizePx: it.sizePx, rotationDeg: it.rotationDeg, placement: it.placement, sideSlot: it.sideSlot }))
+    totalCalories: state.totalCalories || 0, // include total calories for compare.html
+    positions: state.placedInstances.map(it => ({
+      id: it.id, label: it.label, grams: it.grams,
+      x: it.x, y: it.y, sizePx: it.sizePx, rotationDeg: it.rotationDeg,
+      placement: it.placement, sideSlot: it.sideSlot
+    }))
   };
   const box = document.getElementById('payloadBox');
   box.style.display = 'block';
@@ -413,7 +422,12 @@ document.getElementById('gotoCompare').addEventListener('click', ()=> {
     name: document.getElementById('name').value || '',
     timestamp: new Date().toISOString(),
     sessionLabel: 'Local session',
-    positions: state.placedInstances.map(it => ({ id: it.id, label: it.label, grams: it.grams, x: it.x, y: it.y, sizePx: it.sizePx, rotationDeg: it.rotationDeg, placement: it.placement, sideSlot: it.sideSlot }))
+    totalCalories: state.totalCalories || 0, // include total calories for compare.html
+    positions: state.placedInstances.map(it => ({
+      id: it.id, label: it.label, grams: it.grams,
+      x: it.x, y: it.y, sizePx: it.sizePx, rotationDeg: it.rotationDeg,
+      placement: it.placement, sideSlot: it.sideSlot
+    }))
   };
   sessionStorage.setItem('plate_positions_fallback', JSON.stringify(payload));
   // navigate to compare page (will read sessionStorage fallback if no sessionId param)
