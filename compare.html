@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8"/>
-<title>Compare Plate — whole-plate scaling</title>
+<title>Compare Plate — scale whole plate</title>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <style>
   body{font-family:Arial;margin:14px;background:#f6f6f7}
@@ -42,6 +42,14 @@
   </div>
 
 <script>
+/*
+ compare.html — whole-plate scaling; fixes:
+ - overlayLayer is scaled as a single group (not individual items)
+ - fractions preserved and used to render clipped halves (sausage/carrot)
+ - side items placed outside plate (slot logic)
+ - expects session payload in sessionStorage key 'plate_positions_fallback'
+*/
+
 const WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbxEpMGjGgkn8a7_RG0-fSyPj-IZny88ZChcqtQ_ks1ALOv0bxrKYTmLy8pSjx0A5euX5A/exec';
 const PLATE_CANVAS_PX = 560;
 
@@ -49,7 +57,7 @@ function qs(name){ const u = new URL(location.href); return u.searchParams.get(n
 
 let basePayload = null;
 
-// minimal catalog for gramsPerPortion and image fallback
+// catalog must match index.html canonical gramsPerPortion & images
 const CATALOG = {
   potato: { img:'images/potato.svg', gramsPerPortion:150 },
   sausage: { img:'images/sausage.svg', gramsPerPortion:75 },
@@ -73,7 +81,8 @@ function computeSideSlots() {
   return slots;
 }
 
-async function loadBase() {
+// load payload from server (optional) or local sessionStorage
+async function loadBase(){
   const sid = qs('sessionId');
   if (sid) {
     try {
@@ -93,10 +102,12 @@ async function loadBase() {
     return;
   }
 
-  // normalize anchors: ensure gramsPerPortion, grams, fraction; infer bread images
+  // Normalize positions: ensure gramsPerPortion, grams, fraction. Critical for half sausage/carrot.
   const slots = computeSideSlots();
   (basePayload.positions || []).forEach(p => {
     if (typeof p.id === 'string') p.id = p.id.trim();
+
+    // ensure gramsPerPortion from catalog for known ids
     if (CATALOG[p.id]) p.gramsPerPortion = p.gramsPerPortion || CATALOG[p.id].gramsPerPortion;
     else if (p.id === 'bread_variant' || (p.label && p.label.toLowerCase().includes('bread'))) {
       p.gramsPerPortion = p.gramsPerPortion || (CATALOG.bread && CATALOG.bread.gramsPerPortion) || 40;
@@ -110,12 +121,12 @@ async function loadBase() {
       p.gramsPerPortion = p.gramsPerPortion || 100;
     }
 
-    // restore side-slot coords
+    // restore side-slot coordinates if side
     if (p.placement === 'side') {
       if (typeof p.sideSlot === 'number') {
         const s = slots[Math.min(p.sideSlot, slots.length-1)];
         p.x = s.x; p.y = s.y + Math.round((p.sizePx||40)/2);
-      } else if (typeof p.x === 'number' && p.x >= 0 && p.x <= 12 && (!p.y || p.y === 0)) {
+      } else if (typeof p.x === 'number' && p.x >=0 && p.x <=12 && (!p.y || p.y===0)) {
         const s = slots[Math.min(p.x, slots.length-1)];
         p.x = s.x; p.y = s.y + Math.round((p.sizePx||40)/2); p.sideSlot = p.x;
       }
@@ -128,20 +139,21 @@ async function loadBase() {
       else p.grams = 0;
     }
 
-    // compute fraction (rounded)
+    // compute/normalize fraction (two decimals)
     if (p.gramsPerPortion && p.grams) p.fraction = Math.round((p.grams / p.gramsPerPortion) * 100) / 100;
     else if (!('fraction' in p)) p.fraction = 1;
   });
 
-  renderBase();
+  renderBaseAndOverlay();
 }
 
-function renderBase() {
+// draw baseLayer (gray template) and overlayLayer (colored); overlayLayer will be scaled as a whole
+function renderBaseAndOverlay(){
   const baseLayer = document.getElementById('baseLayer');
   const overlayLayer = document.getElementById('overlayLayer');
   baseLayer.innerHTML = ''; overlayLayer.innerHTML = '';
   (basePayload.positions || []).forEach(p => {
-    // base (gray template)
+    // base (template)
     const bw = document.createElement('div'); bw.className='baseItemWrapper';
     bw.style.left = (p.x||0)+'px'; bw.style.top = (p.y||0)+'px';
     bw.style.width = (p.sizePx||48)+'px'; bw.style.height = (p.sizePx||48)+'px';
@@ -149,13 +161,15 @@ function renderBase() {
     const bi = document.createElement('img');
     bi.src = (p._imgOverride || (CATALOG[p.id] && CATALOG[p.id].img) || ('images/' + (p.id || 'unknown') + '.svg'));
     bi.alt = p.label || p.id || '';
+    // preserve fraction visuals in template
     bi.classList.remove('clip-half'); bi.style.transform = '';
     const frac = p.fraction || 1;
     if (Math.abs(frac - 0.5) < 0.001) bi.classList.add('clip-half');
     else if (frac < 0.5) bi.style.transform = `scale(${Math.max(0.25, Math.min(1, frac))})`;
     bw.appendChild(bi); baseLayer.appendChild(bw);
 
-    // overlay (colored) — same visuals; overlayLayer will be scaled as a group
+    // overlay (colored). DO NOT change each item's size to reflect comparison;
+    // keep fraction visuals same as template and let overlayLayer scale as a group.
     const ow = document.createElement('div'); ow.className='overlayWrapper';
     ow.style.left = (p.x||0)+'px'; ow.style.top = (p.y||0)+'px';
     ow.style.width = (p.sizePx||48)+'px'; ow.style.height = (p.sizePx||48)+'px';
@@ -168,24 +182,26 @@ function renderBase() {
     else if (frac < 0.5) oi.style.transform = `scale(${Math.max(0.25, Math.min(1, frac))})`;
     ow.appendChild(oi); overlayLayer.appendChild(ow);
   });
-
-  // overlay initial scale 1
+  // reset overlay scale to 1
   document.getElementById('overlayLayer').style.transform = 'scale(1)';
 }
 
-function totalsFromTargetMap(targetMap) {
+// sum totals
+function computeTotals(targetMap){
   const positions = basePayload.positions || [];
   const actualTotal = positions.reduce((s,p)=>s + (p.grams||0), 0);
+  // targetMap expected to be id->grams
   let targetTotal = 0;
   Object.keys(targetMap || {}).forEach(id => { targetTotal += (targetMap[id] || 0); });
   return { actualTotal, targetTotal };
 }
 
-function animateComparisonWholePlate(targetMap, title) {
-  if (!basePayload || !basePayload.positions || basePayload.positions.length===0) { alert('No base plate to compare. Build a plate first.'); return; }
+// animate whole-plate scaling: overlayLayer scales as a single group
+function animateWholePlateScale(targetMap, title){
+  if (!basePayload || !basePayload.positions || basePayload.positions.length===0) { alert('No base plate to compare.'); return; }
   document.getElementById('caption').textContent = title || '';
 
-  const { actualTotal, targetTotal } = totalsFromTargetMap(targetMap || {});
+  const { actualTotal, targetTotal } = computeTotals(targetMap || {});
   const safeActual = Math.max(1, actualTotal);
   const safeTarget = Math.max(0, targetTotal);
   let scale = 1.0;
@@ -193,19 +209,19 @@ function animateComparisonWholePlate(targetMap, title) {
   else scale = Math.sqrt(safeTarget / safeActual);
   scale = Math.max(0.12, Math.min(3.0, scale));
 
-  // gray template only
+  // gray only template
   const baseLayer = document.getElementById('baseLayer');
   baseLayer.style.transition = 'filter 400ms ease, opacity 400ms ease';
   baseLayer.style.filter = 'grayscale(1)';
   baseLayer.style.opacity = '0.45';
 
-  // scale overlay as a whole
+  // scale overlayLayer group
   const overlayLayer = document.getElementById('overlayLayer');
   overlayLayer.style.transition = `transform 900ms cubic-bezier(.2,.9,.2,1), opacity 400ms ease`;
   overlayLayer.style.transformOrigin = '50% 50%';
-  requestAnimationFrame(()=>{ overlayLayer.style.transform = `scale(${scale})`; });
+  requestAnimationFrame(()=> overlayLayer.style.transform = `scale(${scale})`);
 
-  // caption diffs: aggregate actual & target by id
+  // caption: aggregate diffs by id and show top items
   setTimeout(()=> {
     const aggActual = {};
     basePayload.positions.forEach(p => { aggActual[p.id] = (aggActual[p.id]||0) + (p.grams||0); });
@@ -225,6 +241,7 @@ function animateComparisonWholePlate(targetMap, title) {
     });
     document.getElementById('caption').textContent = (title ? title + ': ' : '') + (top.length? top.join('; '): 'No significant changes');
 
+    // restore after short delay (overlay reset)
     setTimeout(()=> {
       baseLayer.style.filter = ''; baseLayer.style.opacity = '';
       overlayLayer.style.transform = 'scale(1)';
@@ -232,7 +249,7 @@ function animateComparisonWholePlate(targetMap, title) {
   }, 1000);
 }
 
-// helper convert portions->grams for recommended
+// helper: portions->grams for recommended example
 function portionsToGramsMap(portionsMap){
   const grams = {};
   Object.keys(portionsMap||{}).forEach(id => {
@@ -242,22 +259,22 @@ function portionsToGramsMap(portionsMap){
   return grams;
 }
 
-const recommendedCountsFinland_portions = { carrot:2, apple:1, potato:1, bread:0, sausage:1, milk:1, water:1 };
-const recommendedCountsFinland_grams = portionsToGramsMap(recommendedCountsFinland_portions);
+const recommendedPortions = { carrot:2, apple:1, potato:1, bread:0, sausage:1, milk:1, water:1 };
+const recommendedGrams = portionsToGramsMap(recommendedPortions);
 
 // UI
 document.getElementById('backBtn').addEventListener('click', ()=> history.back());
 document.getElementById('cmpRecommendedBtn').addEventListener('click', ()=> {
-  animateComparisonWholePlate(recommendedCountsFinland_grams, 'Recommended (Finland) vs Estimate');
+  animateWholePlateScale(recommendedGrams, 'Recommended (Finland) vs Estimate');
 });
 document.getElementById('cmpRealityBtn').addEventListener('click', ()=> {
   const raw = prompt('Enter target grams JSON mapping (e.g. { "potato": 200, "apple": 100 }) — leave empty to use recommended');
   let target = null;
-  if (!raw) target = recommendedCountsFinland_grams;
+  if (!raw) target = recommendedGrams;
   else {
-    try { target = JSON.parse(raw); } catch(e) { alert('Invalid JSON'); return; }
+    try { target = JSON.parse(raw); } catch(e){ alert('Invalid JSON'); return; }
   }
-  animateComparisonWholePlate(target, 'Reality vs Estimate');
+  animateWholePlateScale(target, 'Reality vs Estimate');
 });
 
 // start
