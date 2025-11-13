@@ -2,19 +2,19 @@
 <html>
 <head>
 <meta charset="utf-8"/>
-<title>Compare Plate (fixed halves for sausage & carrot)</title>
+<title>Compare Plate</title>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <style>
   body{font-family:Arial;margin:14px;background:#f6f6f7}
   .topbar{display:flex;gap:12px;align-items:center;justify-content:center;margin-bottom:10px}
   .btn{padding:8px 12px;border-radius:6px;border:1px solid #bbb;background:#fff;cursor:pointer}
   #stage{position:relative;width:980px;height:660px;margin:6px auto;border-radius:8px;background:#fff;padding:16px;box-shadow:0 6px 22px rgba(0,0,0,0.08)}
-  #plateWrapper{position:relative;width:620px;height:620px;margin:0 auto}
-  /* plateCanvas contains two stacked layers: baseLayer and overlayLayer */
-  #plateCanvas{position:relative;width:560px;height:560px;border-radius:50%;background:#fff6e6;border:8px solid #eee;overflow:visible;margin:0 auto}
+  #plateWrap{position:relative;width:640px;height:640px;margin:0 auto}
+  /* plateCanvas contains two stacked layers: baseLayer (gray template) and overlayLayer (colored, will be scaled) */
+  #plateCanvas{position:relative;width:560px;height:560px;border-radius:50%;background:#fff6e6;border:8px solid #eee;overflow:visible;margin:10px auto}
   #plateCanvas .layer{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none}
-  #plateCanvas #baseLayer{z-index:0}
-  #plateCanvas #overlayLayer{z-index:2}
+  #baseLayer{z-index:0; transform-origin:50% 50%;}
+  #overlayLayer{z-index:2; transform-origin:50% 50%;}
   .baseItemWrapper{position:absolute; transform:translate(-50%,-50%); pointer-events:none;}
   .baseItemWrapper img{display:block;width:100%;height:100%;object-fit:contain}
   .overlayWrapper{position:absolute; transform:translate(-50%,-50%); pointer-events:none; transition: opacity 300ms ease}
@@ -35,7 +35,7 @@
   </div>
 
   <div id="stage">
-    <div id="plateWrapper">
+    <div id="plateWrap">
       <div id="plateCanvas">
         <div id="baseLayer" class="layer"></div>
         <div id="overlayLayer" class="layer"></div>
@@ -46,11 +46,12 @@
 
 <script>
 /*
- Final compare.html — targeted fixes:
- - Ensure sausage and carrot always have gramsPerPortion and fraction computed so halves/quarters persist
- - Side items placed further right (no overlap)
- - Base layer is grayed during comparison; overlay remains colored
- - Overlays preserve the saved fraction visual (clipped half or scaled quarter) and then animate scale on top of that
+ compare.html — whole-plate scaling visualization
+ - reads session fallback 'plate_positions_fallback'
+ - baseLayer: gray template (unchanged)
+ - overlayLayer: colored overlay representing comparison; scaled as a whole
+ - scale = sqrt(totalTargetGrams / totalActualGrams) (area ratio)
+ - preserves half/quarter visuals by computing fraction from grams and gramsPerPortion
 */
 
 const WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbxEpMGjGgkn8a7_RG0-fSyPj-IZny88ZChcqtQ_ks1ALOv0bxrKYTmLy8pSjx0A5euX5A/exec';
@@ -61,6 +62,7 @@ function qs(name){ const u = new URL(location.href); return u.searchParams.get(n
 let basePayload = null;
 let overlayWrappers = [];
 
+// catalog should match index.html
 const CATALOG = {
   potato: { img:'images/potato.svg', gramsPerPortion:150 },
   sausage: { img:'images/sausage.svg', gramsPerPortion:75 },
@@ -71,7 +73,7 @@ const CATALOG = {
   milk: { img:'images/milk-carton.svg', gramsPerPortion:250 }
 };
 
-// Side slots moved well to the right to avoid overlap with plate
+// place side items well to the right of the plate to avoid overlap
 function computeSideSlots() {
   const columnX = PLATE_CANVAS_PX + 48;
   const slotStartY = 28;
@@ -85,7 +87,8 @@ function computeSideSlots() {
   return slots;
 }
 
-async function loadBase(){
+// load saved plate payload
+async function loadBase() {
   const sid = qs('sessionId');
   if (sid) {
     try {
@@ -101,22 +104,16 @@ async function loadBase(){
     if (fallback) basePayload = JSON.parse(fallback);
   }
   if (!basePayload) {
-    alert('No base session found. Please build a plate and click Compare from the build page.');
+    alert('No base session found. Build a plate and click Compare from the build page.');
     return;
   }
 
-  // Strong normalization: ensure gramsPerPortion & fraction for every anchor,
-  // with special handling for sausage and carrot (guarantee correct values).
+  // Normalize: ensure gramsPerPortion, grams and fraction exist; infer bread images if needed
   const slots = computeSideSlots();
   (basePayload.positions || []).forEach(p => {
-    // canonicalize id string (trim) to avoid trailing spaces causing misses
     if (typeof p.id === 'string') p.id = p.id.trim();
-
-    // Ensure catalog fallback exists for sausage and carrot (critical)
-    if (p.id === 'sausage' || p.id === 'carrot' || p.id === 'potato' || p.id === 'apple' || p.id === 'bread' || p.id === 'water' || p.id === 'milk') {
-      const cat = CATALOG[p.id];
-      if (cat) p.gramsPerPortion = p.gramsPerPortion || cat.gramsPerPortion;
-    } else if (p.id === 'bread_variant' || (p.label && p.label.toLowerCase().includes('bread'))) {
+    if (CATALOG[p.id]) p.gramsPerPortion = p.gramsPerPortion || CATALOG[p.id].gramsPerPortion;
+    else if (p.id === 'bread_variant' || (p.label && p.label.toLowerCase().includes('bread'))) {
       p.gramsPerPortion = p.gramsPerPortion || (CATALOG.bread && CATALOG.bread.gramsPerPortion) || 40;
       if (!p._imgOverride) {
         const lbl = (p.label||'').toLowerCase();
@@ -125,11 +122,10 @@ async function loadBase(){
         else p._imgOverride = CATALOG.bread.img;
       }
     } else {
-      // fallback default
       p.gramsPerPortion = p.gramsPerPortion || 100;
     }
 
-    // Restore side-slot coordinates if available, otherwise keep saved x,y (so items stay where created)
+    // restore side-slot coordinates if present
     if (p.placement === 'side') {
       if (typeof p.sideSlot === 'number') {
         const s = slots[Math.min(p.sideSlot, slots.length-1)];
@@ -138,164 +134,116 @@ async function loadBase(){
         const s = slots[Math.min(p.x, slots.length-1)];
         p.x = s.x; p.y = s.y + Math.round((p.sizePx||40)/2); p.sideSlot = p.x;
       }
-      // else keep saved pixel coords
     }
 
-    // Ensure grams exists; derive from fraction if necessary
+    // ensure grams exists; derive from fraction if necessary
     if (!('grams' in p) || p.grams == null) {
       if ('fraction' in p && p.fraction && p.gramsPerPortion) p.grams = Math.round(p.fraction * p.gramsPerPortion);
       else if (p.gramsPerPortion) p.grams = p.gramsPerPortion;
       else p.grams = 0;
     }
 
-    // Compute fraction reliably; rounding guards against tiny floating errors
+    // compute fraction reliably (used for preserving clipped-half visuals)
     if (p.gramsPerPortion && p.grams) p.fraction = Math.round((p.grams / p.gramsPerPortion) * 100) / 100;
     else if (!('fraction' in p)) p.fraction = 1;
   });
 
-  renderBasePlate();
+  renderBase();
 }
 
-// render baseLayer: exact saved visuals (half sausage/carrot preserved)
-function renderBasePlate(){
+// draw the base (template) and an initial colored overlay (identical positions)
+function renderBase() {
   const baseLayer = document.getElementById('baseLayer');
   const overlayLayer = document.getElementById('overlayLayer');
   baseLayer.innerHTML = '';
   overlayLayer.innerHTML = '';
   (basePayload.positions || []).forEach(p => {
-    const wrapper = document.createElement('div');
-    wrapper.className = 'baseItemWrapper';
-    wrapper.style.left = (p.x || 0) + 'px';
-    wrapper.style.top = (p.y || 0) + 'px';
-    wrapper.style.width = (p.sizePx || 48) + 'px';
-    wrapper.style.height = (p.sizePx || 48) + 'px';
-    wrapper.style.transform = `translate(-50%,-50%) rotate(${p.rotationDeg||0}deg)`;
-    const img = document.createElement('img');
-    img.src = (p._imgOverride || (CATALOG[p.id] && CATALOG[p.id].img) || ('images/' + (p.id || 'unknown') + '.svg'));
-    img.alt = p.label || p.id || '';
-    img.classList.remove('clip-half');
-    img.style.transform = '';
-
-    // preserve fraction visuals (very important for sausage and carrot)
+    // base (gray template)
+    const bw = document.createElement('div'); bw.className='baseItemWrapper';
+    bw.style.left = (p.x || 0) + 'px'; bw.style.top = (p.y || 0) + 'px';
+    bw.style.width = (p.sizePx || 48) + 'px'; bw.style.height = (p.sizePx || 48) + 'px';
+    bw.style.transform = `translate(-50%,-50%) rotate(${p.rotationDeg||0}deg)`;
+    const bi = document.createElement('img');
+    bi.src = (p._imgOverride || (CATALOG[p.id] && CATALOG[p.id].img) || ('images/' + (p.id || 'unknown') + '.svg'));
+    bi.alt = p.label || p.id || '';
+    bi.classList.remove('clip-half'); bi.style.transform = '';
+    // preserve half/quarter in template
     const frac = p.fraction || 1;
-    if (Math.abs(frac - 0.5) < 0.001) {
-      img.classList.add('clip-half');
-    } else if (frac < 0.5) {
-      const s = Math.max(0.25, Math.min(1, frac));
-      img.style.transform = `scale(${s})`;
-    }
+    if (Math.abs(frac - 0.5) < 0.001) bi.classList.add('clip-half');
+    else if (frac < 0.5) bi.style.transform = `scale(${Math.max(0.25, Math.min(1, frac))})`;
+    bw.appendChild(bi); baseLayer.appendChild(bw);
 
-    wrapper.appendChild(img);
-    baseLayer.appendChild(wrapper);
+    // overlay (colored) — same starting visuals; we'll scale the whole overlayLayer
+    const ow = document.createElement('div'); ow.className='overlayWrapper';
+    ow.style.left = (p.x || 0) + 'px'; ow.style.top = (p.y || 0) + 'px';
+    ow.style.width = (p.sizePx || 48) + 'px'; ow.style.height = (p.sizePx || 48) + 'px';
+    ow.style.transform = `translate(-50%,-50%) rotate(${p.rotationDeg||0}deg)`; ow.style.opacity='1';
+    const oi = document.createElement('img');
+    oi.src = (p._imgOverride || (CATALOG[p.id] && CATALOG[p.id].img) || ('images/' + (p.id || 'unknown') + '.svg'));
+    oi.alt = p.label || p.id || '';
+    // keep fraction visuals on overlay too
+    oi.classList.remove('clip-half'); oi.style.transform = '';
+    if (Math.abs(frac - 0.5) < 0.001) oi.classList.add('clip-half');
+    else if (frac < 0.5) oi.style.transform = `scale(${Math.max(0.25, Math.min(1, frac))})`;
+    ow.appendChild(oi); overlayLayer.appendChild(ow);
   });
-}
 
-// overlay wrappers appended into overlayLayer; overlays are colored and will animate
-function createOverlayWrappers(){
+  // ensure overlay starts with scale 1
   const overlayLayer = document.getElementById('overlayLayer');
-  overlayWrappers.forEach(o => { if (o.wrapper && o.wrapper.parentNode) o.wrapper.parentNode.removeChild(o.wrapper); });
-  overlayWrappers = [];
-  (basePayload.positions || []).forEach(p => {
-    const wrapper = document.createElement('div');
-    wrapper.className = 'overlayWrapper';
-    wrapper.style.left = (p.x || 0) + 'px';
-    wrapper.style.top = (p.y || 0) + 'px';
-    wrapper.style.width = (p.sizePx || 48) + 'px';
-    wrapper.style.height = (p.sizePx || 48) + 'px';
-    wrapper.style.transform = `translate(-50%,-50%) rotate(${p.rotationDeg||0}deg)`;
-    wrapper.style.opacity = '0';
-    const img = document.createElement('img');
-    img.src = (p._imgOverride || (CATALOG[p.id] && CATALOG[p.id].img) || ('images/' + (p.id || 'unknown') + '.svg'));
-    img.alt = p.label || p.id || '';
-    // Initialize overlay visually consistent with saved fraction so half/quarter look stable during animation
-    img.classList.remove('clip-half');
-    img.style.transform = '';
-    const frac = p.fraction || 1;
-    if (Math.abs(frac - 0.5) < 0.001) {
-      img.classList.add('clip-half');
-      img.style.transform = 'scale(1)';
-    } else if (frac < 0.5) {
-      const s = Math.max(0.25, Math.min(1, frac));
-      img.style.transform = `scale(${s})`;
-    } else {
-      img.style.transform = 'scale(1)';
-    }
-    // Start tiny and then animate to target on top of the preserved fraction visual
-    img.style.opacity = '0';
-    wrapper.appendChild(img);
-    overlayLayer.appendChild(wrapper);
-    overlayWrappers.push({ wrapper, img, anchor: p });
-  });
-  return overlayWrappers;
+  overlayLayer.style.transform = 'scale(1)';
 }
 
-// animate comparison; targetMap is id->total grams
-function animateComparison(targetMap, title, options = {}){
+// compute total actual grams and total target grams from targetMap
+function totalsFromTargetMap(targetMap) {
+  const positions = basePayload.positions || [];
+  const actualTotal = positions.reduce((s,p)=>s + (p.grams || 0), 0);
+  // sum targetMap values (id->grams). Treat bread_variant as bread key if only bread provided.
+  let targetTotal = 0;
+  Object.keys(targetMap || {}).forEach(id => { targetTotal += (targetMap[id] || 0); });
+  return { actualTotal, targetTotal };
+}
+
+// animate whole-plate scaling: overlayLayer scales as a single unit
+function animateComparisonWholePlate(targetMap, title, options = {}) {
   if (!basePayload || !basePayload.positions || basePayload.positions.length === 0) { alert('No base plate to compare. Build a plate first.'); return; }
   document.getElementById('caption').textContent = title || '';
 
-  const anchorsById = {};
-  basePayload.positions.forEach(p => (anchorsById[p.id] = anchorsById[p.id] || []).push(p));
-  const targetGramsById = Object.assign({}, targetMap || {});
+  // compute totals
+  const { actualTotal, targetTotal } = totalsFromTargetMap(targetMap || {});
+  // if targets are provided per-item under 'bread' but we have bread_variant anchors, include bread value once (targetMap should already include it)
+  // avoid divide-by-zero
+  const safeActual = Math.max(1, actualTotal);
+  const safeTarget = Math.max(0, targetTotal);
 
-  const overlays = createOverlayWrappers();
+  // compute scale from area ratio (scale by sqrt of mass ratio)
+  let scale = 1.0;
+  if (safeTarget <= 0) scale = 0.001; // no overlay (or near invisible) if target is zero
+  else scale = Math.sqrt(safeTarget / safeActual);
+  // clamp reasonable range
+  scale = Math.max(0.12, Math.min(3.0, scale));
 
-  // gray baseLayer only
+  // gray only the base template (baseLayer)
   const baseLayer = document.getElementById('baseLayer');
-  baseLayer.style.transition = 'filter 300ms ease, opacity 300ms ease';
+  baseLayer.style.transition = 'filter 400ms ease, opacity 400ms ease';
   baseLayer.style.filter = 'grayscale(1)';
   baseLayer.style.opacity = '0.45';
 
-  const animateMs = options.animateMs || 900;
-  requestAnimationFrame(() => {
-    overlays.forEach(o => {
-      const anchor = o.anchor;
-      const anchorGrams = Math.max(1, anchor.grams || anchor.gramsPerPortion || (CATALOG[anchor.id] && CATALOG[anchor.id].gramsPerPortion) || 100);
-      let targetTotalForId = Math.max(0, targetGramsById[anchor.id] || 0);
-      if (anchor.id === 'bread_variant' && (targetGramsById['bread'] || 0) > 0) targetTotalForId = targetGramsById['bread'];
-      const countAnchors = (anchorsById[anchor.id] || []).length || 1;
-      const perAnchorTarget = (countAnchors > 0) ? (targetTotalForId / countAnchors) : 0;
+  // scale overlayLayer as a whole
+  const overlayLayer = document.getElementById('overlayLayer');
+  overlayLayer.style.transition = `transform 900ms cubic-bezier(.2,.9,.2,1), opacity 400ms ease`;
+  overlayLayer.style.transformOrigin = '50% 50%';
+  // animate to computed scale
+  requestAnimationFrame(() => { overlayLayer.style.transform = `scale(${scale})`; });
 
-      // compute area-based scale factor
-      let scale = 0.001;
-      if (perAnchorTarget <= 0) scale = 0.001;
-      else scale = Math.sqrt(Math.max(0.0001, perAnchorTarget / anchorGrams));
-      scale = Math.max(0.12, Math.min(3.0, scale));
-
-      // preserve saved fraction visual and apply computed scale on top of that
-      const frac = anchor.fraction || Math.round((anchor.grams / (anchor.gramsPerPortion || 1)) * 100) / 100;
-      if (Math.abs(frac - 0.5) < 0.001) {
-        // keep clipped half and scale it
-        o.img.classList.add('clip-half');
-        // combine base visual scale (1) with computed scale by using the computed scale directly
-        o.img.style.transform = `scale(${Math.max(0.6, Math.min(scale, 1.6))})`;
-      } else if (frac < 0.5) {
-        o.img.classList.remove('clip-half');
-        const innerScale = Math.max(0.25, Math.min(scale, 1.8));
-        o.img.style.transform = `scale(${innerScale})`;
-      } else {
-        o.img.classList.remove('clip-half');
-        o.img.style.transform = `scale(${Math.max(0.6, Math.min(scale, 1.8))})`;
-      }
-
-      // ensure overlays are visible only when target > 0
-      o.wrapper.style.opacity = perAnchorTarget > 0 ? '1' : '0.0';
-      // animate transform/opacity
-      o.img.style.transition = `transform ${animateMs}ms cubic-bezier(.2,.9,.2,1), opacity ${animateMs}ms ease`;
-      o.img.style.opacity = perAnchorTarget > 0 ? '1' : '0';
-    });
-  });
-
-  // calculate and show diffs after animation
+  // compute diffs for caption (per id)
   setTimeout(() => {
+    const aggActual = {};
+    basePayload.positions.forEach(p => { aggActual[p.id] = (aggActual[p.id]||0) + (p.grams || 0); });
     const diffs = [];
-    const anchorTotals = {};
-    basePayload.positions.forEach(p => { anchorTotals[p.id] = (anchorTotals[p.id]||0) + (p.grams || p.gramsPerPortion || 0); });
-    const allIds = new Set([...Object.keys(anchorTotals), ...Object.keys(targetGramsById)]);
-    allIds.forEach(id => {
-      let a = anchorTotals[id] || 0;
-      let t = targetGramsById[id] || 0;
-      if (id === 'bread_variant' && (targetGramsById['bread'] || 0) > 0) t = targetGramsById['bread'];
+    const ids = new Set([...Object.keys(aggActual), ...Object.keys(targetMap || {})]);
+    ids.forEach(id => {
+      const a = aggActual[id] || 0;
+      const t = (targetMap && (targetMap[id] || 0)) || 0;
       if (Math.abs(a - t) < 1) return;
       const pct = a === 0 ? (t>0 ? 100 : 0) : Math.round(((t - a) / Math.max(1,a)) * 100);
       diffs.push({ id, a, t, pct });
@@ -307,17 +255,16 @@ function animateComparison(targetMap, title, options = {}){
     });
     document.getElementById('caption').textContent = (title ? title + ': ' : '') + (top.length ? top.join('; ') : 'No significant changes');
 
-    // cleanup overlays and restore baseLayer
+    // after a pause, restore baseLayer visuals and reset overlay scale to 1 if you want (here we restore)
     setTimeout(() => {
-      overlayWrappers.forEach(o => { if (o.wrapper && o.wrapper.parentNode) o.wrapper.parentNode.removeChild(o.wrapper); });
-      overlayWrappers = [];
       baseLayer.style.filter = '';
       baseLayer.style.opacity = '';
+      overlayLayer.style.transform = 'scale(1)';
     }, 2200);
-  }, animateMs + 120);
+  }, 1000);
 }
 
-// helper to convert portions->grams via catalog
+// helpers to convert portions->grams (for recommended)
 function portionsToGramsMap(portionsMap){
   const grams = {};
   Object.keys(portionsMap||{}).forEach(id => {
@@ -333,19 +280,21 @@ const recommendedCountsFinland_grams = portionsToGramsMap(recommendedCountsFinla
 // UI wiring
 document.getElementById('backBtn').addEventListener('click', ()=> history.back());
 document.getElementById('cmpRecommendedBtn').addEventListener('click', ()=> {
-  animateComparison(recommendedCountsFinland_grams, 'Recommended (Finland) vs Estimate', { animateMs: 900 });
+  animateComparisonWholePlate(recommendedCountsFinland_grams, 'Recommended (Finland) vs Estimate', { animateMs: 900 });
 });
 document.getElementById('cmpRealityBtn').addEventListener('click', ()=> {
   const raw = prompt('Enter target grams JSON mapping (e.g. { "potato": 200, "apple": 100 }) — leave empty to use recommended');
   let target = null;
   if (!raw) target = recommendedCountsFinland_grams;
   else {
-    try { target = JSON.parse(raw); } catch(e){ alert('Invalid JSON'); return; }
+    try { target = JSON.parse(raw);
+      // If user supplies portions instead of grams (detect small numbers), you could multiply by gramsPerPortion here — keep simple
+    } catch(e) { alert('Invalid JSON'); return; }
   }
-  animateComparison(target, 'Reality vs Estimate', { animateMs: 900 });
+  animateComparisonWholePlate(target, 'Reality vs Estimate', { animateMs: 900 });
 });
 
-// start
+// initialize
 loadBase();
 </script>
 </body>
