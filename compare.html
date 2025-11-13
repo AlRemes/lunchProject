@@ -98,16 +98,16 @@
 
 <script>
 /*
- - Scale determined by total calories: scale = sqrt(targetCalories / actualCalories)
- - Uses payload.totalCalories (provided by index.html) when present, otherwise computes from positions
- - preserves bread_variant, _imgOverride, fraction, grams and kcalPerPortion transferred from index.html
- - overlay scaledGroup contains on-plate items and SVG circle so the plate remains circular
- - base on-plate items are hidden while overlay is active to avoid duplicate appearance
+ Fixes included:
+ - preserves id (including bread_variant) and _imgOverride from index payload
+ - preserves fraction (1, 0.5, 0.25) and renders half as clipped, quarter as scaled
+ - places side items into computed side slots using sideSlot when available (mirrors index.html placement)
+ - uses payload.totalCalories when present for scaling
+ - annulus starts exactly at plate edge and extends outward/inward
 */
 
 const SESSION_KEY = 'plate_positions_fallback';
 
-// calories per gram (kcal/g). Edit if you have better per-item numbers.
 const CAL_PER_G = {
   potato: 0.77,
   sausage: 2.5,
@@ -120,7 +120,6 @@ const CAL_PER_G = {
   water: 0.0
 };
 
-// image/catalog fallback (used for rendering)
 const CATALOG_IMG = {
   potato: 'images/potato.svg',
   sausage: 'images/sausage.svg',
@@ -152,42 +151,60 @@ function loadPayload(){
   try { return JSON.parse(raw); } catch(e){ return null; }
 }
 
-/*
- Normalize payload but do NOT overwrite properties that index.html intentionally included:
- - keep p.kcalPerPortion, p.gramsPerPortion, p._imgOverride, p.grams, p.fraction if present
- - ensure minimal defaults if some fields are missing
-*/
+/* compute side slots to match index.html placement system */
+function computeSideSlotsForCanvas(canvas) {
+  const plateEl = canvas.querySelector('.layer') || canvas;
+  const cardRect = canvas.getBoundingClientRect();
+  // use same logic as index: plate is centered area sized by --plate-pct
+  const platePct = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--plate-pct')) / 100;
+  const gap = Math.max(8, Math.round(Math.min(cardRect.width, cardRect.height) * 0.02));
+  // approximate plate bounding rect center
+  const plateDiameter = Math.min(cardRect.width, cardRect.height) * platePct;
+  const plateRectRight = (cardRect.width / 2) + (plateDiameter / 2);
+  const columnX = Math.min(cardRect.width - 30, Math.round(plateRectRight + gap));
+  const slotStartY = 40;
+  const slotSpacing = 38;
+  const slotBaseHeight = 40;
+  const availableHeight = cardRect.height - slotStartY - 20;
+  const slotStep = slotBaseHeight + slotSpacing;
+  const maxSlots = Math.max(4, Math.floor(availableHeight / slotStep));
+  const slots = [];
+  for(let i=0;i<maxSlots;i++){
+    slots.push({ x: columnX, y: slotStartY + i * slotStep });
+  }
+  return slots;
+}
+
+/* normalize payload but preserve fields from index.html exactly (kcalPerPortion, gramsPerPortion, _imgOverride, grams, fraction, sideSlot) */
 function normalizePayload(p){
   (p.positions || []).forEach(item => {
-    // preserve existing values when present
     if (typeof item.gramsPerPortion !== 'number') item.gramsPerPortion = item.gramsPerPortion || 100;
     if (!('grams' in item) || item.grams == null) {
       if ('fraction' in item && item.fraction && item.gramsPerPortion) item.grams = Math.round(item.fraction * item.gramsPerPortion);
       else item.grams = item.gramsPerPortion || 0;
     }
-    if (item.gramsPerPortion && item.grams) {
-      // preserve precise fraction as recorded; avoid clobbering halves/quarters
-      item.fraction = Number((item.grams / item.gramsPerPortion).toFixed(3));
-    } else {
-      item.fraction = item.fraction || 1;
+    // preserve fraction exactly as recorded when possible (do not round to nearest whole)
+    if (typeof item.fraction !== 'number' || isNaN(item.fraction)) {
+      if (item.gramsPerPortion && item.grams) item.fraction = item.grams / item.gramsPerPortion;
+      else item.fraction = 1;
     }
-    // keep any provided kcalPerPortion or _imgOverride from index
-    if (item._imgOverride) item._imgOverride = item._imgOverride;
-    if (item.kcalPerPortion) item.kcalPerPortion = item.kcalPerPortion;
+    // keep provided kcalPerPortion and _imgOverride intact (no rewrite)
   });
 
-  // prefer totalCalories passed from index.html; if missing, compute from positions
   if (!('totalCalories' in p) || typeof p.totalCalories !== 'number') {
     p.totalCalories = totalCaloriesPayloadFromPositions(p.positions || []);
   } else {
-    // ensure it's numeric integer
     p.totalCalories = Math.round(Math.max(0, Number(p.totalCalories) || 0));
   }
 }
 
-// Render base layer (colored). mark on-plate with data-onplate so they can be hidden when overlay active.
+/* render base (unscaled) using original item positions; ensure side items are positioned using sideSlot when provided */
 function renderBase(targetBase){
   targetBase.innerHTML = '';
+
+  const slots = computeSideSlotsForCanvas(targetBase.parentElement);
+
+  // plate anchor for alignment
   const plateBg = document.createElement('div');
   plateBg.style.position='absolute';
   plateBg.style.left='50%'; plateBg.style.top='50%';
@@ -201,19 +218,30 @@ function renderBase(targetBase){
     const w = document.createElement('div');
     w.className = 'itemWrapper';
     w.dataset.onplate = p.placement === 'onplate' ? '1' : '0';
-    w.style.left = (p.x||0) + 'px';
-    w.style.top = (p.y||0) + 'px';
+
+    // for side items, if sideSlot present, map to computed slot coords; otherwise fall back to stored x,y
+    if (p.placement === 'side') {
+      const slotIndex = (typeof p.sideSlot === 'number') ? p.sideSlot : 0;
+      const chosen = slots[Math.min(slotIndex, slots.length-1)] || {x:10,y:40};
+      const left = Math.min(Math.max(chosen.x, 10), targetBase.parentElement.clientWidth - 10);
+      const top = Math.min(Math.max(chosen.y + Math.round((p.sizePx||40)/2), 10), targetBase.parentElement.clientHeight - 10);
+      w.style.left = left + 'px';
+      w.style.top = top + 'px';
+    } else {
+      w.style.left = (p.x||0) + 'px';
+      w.style.top = (p.y||0) + 'px';
+    }
+
     w.style.width = (p.sizePx||48) + 'px';
     w.style.height = (p.sizePx||48) + 'px';
     w.style.transform = `translate(-50%,-50%) rotate(${p.rotationDeg||0}deg)`;
-    const img = document.createElement('img');
 
-    // prefer instance override (bread_variant / bread with butter/cheese)
+    const img = document.createElement('img');
     img.src = (p._imgOverride || CATALOG_IMG[p.id] || ('images/' + (p.id || 'unknown') + '.svg'));
     img.alt = p.label || p.id || '';
     img.classList.remove('clip-half'); img.style.transform = '';
 
-    // respect fractional presentation preserved from index (half/quarter)
+    // respect exact fraction transferred from index
     const frac = (typeof p.fraction === 'number') ? p.fraction : 1;
     if (Math.abs(frac - 0.5) < 0.001) img.classList.add('clip-half');
     else if (frac < 0.5) img.style.transform = `scale(${Math.max(0.25, Math.min(1, frac))})`;
@@ -223,7 +251,7 @@ function renderBase(targetBase){
   });
 }
 
-// Build scaled overlay: scaledContainer covers canvas; scaledGroup centered and sized to --plate-pct; scaledGroup contains SVG circle + on-plate items placed at same px coords.
+/* scaled overlay (on-plate items only) — side items are not scaled here (keeps side column independent) */
 function buildScaledOverlay(targetOverlay){
   targetOverlay.innerHTML = '';
   const scaledContainer = document.createElement('div');
@@ -240,7 +268,6 @@ function buildScaledOverlay(targetOverlay){
   scaledGroup.style.transform = 'translate(-50%,-50%) scale(var(--overlay-baseline))';
   scaledGroup.style.transformOrigin = '50% 50%';
 
-  // perfect circle svg (transparent stroke so scaling keeps circular shape)
   const svgNS = 'http://www.w3.org/2000/svg';
   const svg = document.createElementNS(svgNS,'svg');
   svg.setAttribute('viewBox','0 0 100 100');
@@ -253,9 +280,9 @@ function buildScaledOverlay(targetOverlay){
   svg.appendChild(circle);
   scaledGroup.appendChild(svg);
 
-  // append on-plate items to scaledGroup using same pixel coordinates as base so they match visually; these scale with the group
+  // append only on-plate items so they scale with the plate
   (payload.positions || []).forEach(p => {
-    if (p.placement === 'side') return;
+    if (p.placement !== 'onplate') return;
     const w = document.createElement('div');
     w.className = 'itemWrapper';
     w.style.position='absolute';
@@ -265,15 +292,12 @@ function buildScaledOverlay(targetOverlay){
     w.style.height = (p.sizePx||48) + 'px';
     w.style.transform = `translate(-50%,-50%) rotate(${p.rotationDeg||0}deg)`;
     const img = document.createElement('img');
-
     img.src = (p._imgOverride || CATALOG_IMG[p.id] || ('images/' + (p.id || 'unknown') + '.svg'));
     img.alt = p.label || p.id || '';
     img.classList.remove('clip-half'); img.style.transform = '';
-
     const frac = (typeof p.fraction === 'number') ? p.fraction : 1;
     if (Math.abs(frac - 0.5) < 0.001) img.classList.add('clip-half');
     else if (frac < 0.5) img.style.transform = `scale(${Math.max(0.25, Math.min(1, frac))})`;
-
     w.appendChild(img);
     scaledGroup.appendChild(w);
   });
@@ -284,7 +308,7 @@ function buildScaledOverlay(targetOverlay){
   targetOverlay.style.display = 'block';
 }
 
-// compute total calories for a mapping id->grams (if mapping omitted, compute from payload)
+/* calorie helpers */
 function totalCaloriesFromMap(map){
   let sum = 0;
   Object.keys(map || {}).forEach(id => {
@@ -296,7 +320,6 @@ function totalCaloriesFromMap(map){
 }
 function totalCaloriesPayloadFromPositions(positions){
   return (positions || []).reduce((s,p) => {
-    // if payload included explicit kcalPerPortion / gramsPerPortion, prefer those values for accuracy
     if (typeof p.kcalPerPortion === 'number' && typeof p.gramsPerPortion === 'number' && p.gramsPerPortion > 0) {
       const calPerG = (p.kcalPerPortion / p.gramsPerPortion);
       return s + (p.grams || 0) * calPerG;
@@ -306,12 +329,11 @@ function totalCaloriesPayloadFromPositions(positions){
   }, 0);
 }
 function totalCaloriesPayload(){
-  // Prefer payload.totalCalories passed from index.html; fallback to computing from positions
   if (payload && typeof payload.totalCalories === 'number') return Math.max(0, Math.round(payload.totalCalories));
   return Math.max(0, Math.round(totalCaloriesPayloadFromPositions(payload.positions || [])));
 }
 
-// Draw annulus starting at the plate edge and extending outward for growth, inward for shrink
+/* draw annulus that starts at plate edge (baseDia) and extends outward to scaledDia (growth) or inward for shrink */
 function drawAnnulus(annNode, scale){
   annNode.innerHTML = '';
   if (!scale || isNaN(scale)) return;
@@ -319,13 +341,12 @@ function drawAnnulus(annNode, scale){
   const canvasRect = canvas.getBoundingClientRect();
   const platePct = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--plate-pct')) / 100;
   const baseDia = Math.min(canvasRect.width, canvasRect.height) * platePct;
-  const scaledDia = baseDia * scale;
+  const scaledDia = Math.max(2, baseDia * scale);
 
   const ann = document.createElement('div');
   ann.className = 'annulus';
 
   if (scale >= 1) {
-    // growth: annulus outer = scaledDia, inner = baseDia
     const outer = scaledDia;
     const thickness = Math.max(4, (scaledDia - baseDia) / 2);
     ann.style.width = outer + 'px';
@@ -334,7 +355,6 @@ function drawAnnulus(annNode, scale){
     ann.style.boxSizing = 'border-box';
     ann.style.opacity = 0.9;
   } else {
-    // shrink: annulus outer = baseDia, thickness occupies inward space down to scaledDia
     const outer = baseDia;
     const thickness = Math.max(4, (baseDia - scaledDia) / 2);
     ann.style.width = outer + 'px';
@@ -347,7 +367,7 @@ function drawAnnulus(annNode, scale){
   annNode.appendChild(ann);
 }
 
-// compute scale from calories (with sane bounds)
+/* compute scale */
 function computeScaleFromCalories(targetMap){
   const actualCal = Math.max(1, totalCaloriesPayload());
   const targetCal = Math.max(0, totalCaloriesFromMap(targetMap || {}));
@@ -355,9 +375,10 @@ function computeScaleFromCalories(targetMap){
   return Math.max(0.12, Math.min(3.0, Math.sqrt(targetCal / actualCal)));
 }
 
-// run compare: build overlay, hide base on-plate items, draw annulus and set uniform scale on overlay group
+/* run compare */
 function runCompare(targetOverlay, targetBase, annNode, captionEl, targetMap, title){
   if (!payload) { alert('No saved plate'); return; }
+  captionEl.textContent = title || '';
 
   // clear previous
   targetOverlay.innerHTML = '';
@@ -372,31 +393,29 @@ function runCompare(targetOverlay, targetBase, annNode, captionEl, targetMap, ti
     if (el.dataset.onplate === '1') el.classList.add('hidden-onplate');
   });
 
-  // draw annulus that starts at plate edge
+  // draw annulus
   drawAnnulus(annNode, scale);
 
-  // apply uniform scale to scaledGroup (this scales plate overlay + on-plate items)
+  // apply scale to overlay group
   const scaledGroup = targetOverlay._scaledGroup;
   if (scaledGroup) {
     scaledGroup.style.transition = 'transform 850ms cubic-bezier(.2,.9,.2,1)';
     requestAnimationFrame(()=> scaledGroup.style.transform = `translate(-50%,-50%) scale(${scale})`);
   }
 
-  // caption: show only percentage difference (signed)
+  // show only percentage difference
   setTimeout(()=> {
     const actualCal = Math.round(totalCaloriesPayload());
     const targetCal = Math.round(totalCaloriesFromMap(targetMap || {}));
-    // percent difference relative to actual: ((target - actual)/actual)*100
     let diffPct = 0;
     if (actualCal > 0) diffPct = Math.round(((targetCal - actualCal) / actualCal) * 100);
     else diffPct = targetCal > 0 ? 100 : 0;
-    // keep sign (e.g., -49% or +20%)
     const sign = diffPct > 0 ? '+' : '';
     captionEl.textContent = `${title || ''}: ${sign}${diffPct}% difference`;
-  }, 950);
+  }, 900);
 }
 
-// clear compare: remove overlay, annulus, and show base on-plate items again
+/* clear compare */
 function clearCompare(targetOverlay, targetBase, annNode, captionEl){
   targetOverlay.innerHTML = '';
   delete targetOverlay._scaledGroup;
@@ -407,7 +426,7 @@ function clearCompare(targetOverlay, targetBase, annNode, captionEl){
   captionEl.textContent = 'Comparison cleared. Template remains colored.';
 }
 
-// helper: recommended portions -> grams (used as default)
+/* recommended mapping helper */
 function portionsToGramsMap(portions){
   const g = {};
   Object.keys(portions||{}).forEach(id => {
@@ -419,7 +438,7 @@ function portionsToGramsMap(portions){
 const recommendedPortions = { carrot:2, apple:1, potato:1, bread_variant:0, sausage:1, milk:1, water:1 };
 const recommendedGrams = portionsToGramsMap(recommendedPortions);
 
-// UI wiring
+/* UI wiring */
 document.getElementById('backBtn').addEventListener('click', ()=> history.back());
 document.getElementById('resetAllBtn').addEventListener('click', ()=> {
   clearCompare(overRec, baseRec, annRec, capRec);
@@ -442,7 +461,7 @@ document.getElementById('cmpRealityBtn').addEventListener('click', ()=> {
 });
 document.getElementById('clearRealityBtn').addEventListener('click', ()=> clearCompare(overReal, baseReal, annReal, capReal));
 
-// init
+/* init */
 (function init(){
   const p = loadPayload();
   if (!p) {
