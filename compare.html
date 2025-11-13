@@ -5,7 +5,11 @@
 <title>Compare Plate — scale by total calories</title>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <style>
-  :root { --canvas-size: 760px; --plate-pct: 72%; --overlay-baseline: 0.92; }
+  :root {
+    --canvas-size: 520px; /* MATCH index.html plateWrapper/plate size so visuals align */
+    --plate-pct: 100%;    /* scaledGroup will match the actual plate pixel size */
+    --overlay-baseline: 1; /* baseline 1 so computed scale is applied directly */
+  }
   body{font-family:Arial;margin:14px;background:#f6f6f7}
   .page{max-width:1200px;margin:0 auto}
   .topbar{display:flex;gap:12px;align-items:center;justify-content:space-between;margin-bottom:12px}
@@ -15,10 +19,12 @@
   .panelHeader{display:flex;gap:10px;align-items:center;margin-bottom:8px}
   .panelTitle{font-weight:600}
   .canvasRow{display:flex;gap:18px;align-items:flex-start}
-  .plateCanvas{position:relative;width:var(--canvas-size);height:var(--canvas-size);background:#fff6e6;border:8px solid #eee;overflow:visible;padding:80px;box-sizing:border-box;border-radius:50%}
+  /* Match index: plate element is 480px diameter inside a 520px wrapper. Use same dims. */
+  .plateCanvas{position:relative;width:520px;height:520px;background:#fff6e6;border:8px solid #eee;overflow:visible;padding:0;box-sizing:border-box;border-radius:50%}
   .layer{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none}
   .scaledContainer{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;overflow:visible}
-  .scaledGroup{position:absolute;left:50%;top:50%;width:var(--plate-pct);height:var(--plate-pct);transform:translate(-50%,-50%) scale(var(--overlay-baseline));transform-origin:50% 50%;pointer-events:none;overflow:visible}
+  /* scaledGroup now exactly overlays the plate area (480px circle centered inside the 520 wrapper) */
+  .scaledGroup{position:absolute;left:50%;top:50%;width:480px;height:480px;transform:translate(-50%,-50%) scale(var(--overlay-baseline));transform-origin:50% 50%;pointer-events:none;overflow:visible;border-radius:50%}
   .scaledSvg{position:absolute;left:0;top:0;width:100%;height:100%}
   .itemWrapper{position:absolute; transform:translate(-50%,-50%); pointer-events:none}
   .itemWrapper img{display:block;width:100%;height:100%;object-fit:contain}
@@ -28,7 +34,7 @@
   .spacer{flex:1}
   .annulus{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);border-radius:50%;pointer-events:none;opacity:0.9;box-sizing:border-box}
   .hidden-onplate { opacity:0; transform:scale(0.98); transition:opacity 220ms ease, transform 220ms ease; pointer-events:none; }
-  @media (max-width:1000px){ :root{--canvas-size:560px} .plateCanvas{padding:44px} .scaledGroup{width:78%;height:78%} }
+  @media (max-width:1000px){ :root{--canvas-size:420px} .plateCanvas{width:420px;height:420px} .scaledGroup{width:380px;height:380px} }
 </style>
 </head>
 <body>
@@ -38,7 +44,9 @@
         <button id="backBtn" class="btn">Back</button>
         <div class="small" style="color:#444">Template: your saved plate (colored). Use panels below to compare by calories.</div>
       </div>
-      <div style="display:flex;gap:8px"><button id="resetAllBtn" class="btn">Reset Comparisons</button></div>
+      <div style="display:flex;gap:8px">
+        <button id="resetAllBtn" class="btn">Reset Comparisons</button>
+      </div>
     </div>
 
     <div class="panels">
@@ -91,44 +99,32 @@
   </div>
 
 <script>
-/* Fixes:
- - infer gramsPerPortion and fraction from DEFAULT_GRAMS when index payload omits them
- - use DEFAULT_GRAMS for recommended portions mapping (so target calories align with index)
- - preserve _imgOverride and id (bread_variant) and render halves/quarters correctly
- - scale overlay by sqrt(targetCalories / actualCalories) and draw annulus starting at plate edge
+/* Keep plate size identical to index.html:
+ - index uses a 480px plate inside a wrapper; here scaledGroup is exactly 480px so scaling is relative to that same base.
+ - overlay baseline set to 1 so computed scale = sqrt(target/actual) is applied directly.
+ - all other logic preserved: uses payload.totalCalories when present, preserves fractions, bread_variant, _imgOverride, sideSlot.
 */
 
 const SESSION_KEY = 'plate_positions_fallback';
 
-// calories per gram (kcal/g)
 const CAL_PER_G = {
   potato: 0.77, sausage: 2.5, carrot: 0.41,
   bread_variant: 2.5, bread: 2.5, apple: 0.52,
   orange: 0.47, milk: 0.64, water: 0.0
 };
 
-// fallback images
 const CATALOG_IMG = {
   potato: 'images/potato.svg', sausage: 'images/sausage.svg', carrot: 'images/carrot.svg',
   bread_variant: 'images/slice-of-bread.svg', bread: 'images/slice-of-bread.svg',
   apple: 'images/apple.svg', orange: 'images/orange.svg', milk: 'images/milk-carton.svg', water: 'images/glass-of-water.svg'
 };
 
-// DEFAULT grams per portion matching index.html
 const DEFAULT_GRAMS = {
-  potato: 150,
-  sausage: 75,
-  carrot: 75,
-  bread: 40,
-  bread_variant: 40,
-  apple: 150,
-  milk: 250,
-  water: 200
+  potato: 150, sausage: 75, carrot: 75, bread: 40, bread_variant: 40, apple:150, milk:250, water:200
 };
 
 let payload = null;
 
-// DOM refs
 const baseRec = document.getElementById('baseRecommended');
 const annRec  = document.getElementById('annulusRecommended');
 const overRec = document.getElementById('overlayRecommended');
@@ -145,11 +141,11 @@ function loadPayload(){
   try { return JSON.parse(raw); } catch(e){ return null; }
 }
 
-/* compute side slots similar to index layout for canvas element */
+/* Compute side slots matching index approach (for side placement) */
 function computeSideSlotsForCanvas(canvas) {
   const cardRect = canvas.getBoundingClientRect();
-  const platePct = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--plate-pct')) / 100;
-  const plateDiameter = Math.min(cardRect.width, cardRect.height) * platePct;
+  const platePct = 480 / Math.min(cardRect.width, cardRect.height); // plate is 480px inside wrapper
+  const plateDiameter = 480;
   const plateRectRight = (cardRect.width / 2) + (plateDiameter / 2);
   const gap = Math.max(8, Math.round(Math.min(cardRect.width, cardRect.height) * 0.02));
   const columnX = Math.min(cardRect.width - 30, Math.round(plateRectRight + gap));
@@ -162,14 +158,9 @@ function computeSideSlotsForCanvas(canvas) {
   return slots;
 }
 
-/* Normalize payload:
- - set gramsPerPortion from DEFAULT_GRAMS if missing
- - compute kcalPerPortion if missing (gramsPerPortion * CAL_PER_G)
- - compute fraction precisely = grams / gramsPerPortion and preserve halves/quart as floats
-*/
+/* Normalize payload: preserve fields from index and infer missing defaults */
 function normalizePayload(p){
   (p.positions || []).forEach(item => {
-    // ensure grams exist
     if (!('grams' in item) || item.grams == null) {
       if ('fraction' in item && item.fraction && (item.gramsPerPortion || DEFAULT_GRAMS[item.id])) {
         const gpp = item.gramsPerPortion || DEFAULT_GRAMS[item.id] || 100;
@@ -178,33 +169,22 @@ function normalizePayload(p){
         item.grams = item.grams || 0;
       }
     }
-
-    // ensure gramsPerPortion
     if (typeof item.gramsPerPortion !== 'number') {
       item.gramsPerPortion = item.gramsPerPortion || (DEFAULT_GRAMS[item.id] || 100);
     }
-
-    // compute precise fraction and preserve halves/quarters
     if (item.gramsPerPortion && typeof item.grams === 'number') {
       const rawFrac = item.grams / item.gramsPerPortion;
-      // keep common fractions exact when close
       if (Math.abs(rawFrac - 0.5) < 0.015) item.fraction = 0.5;
       else if (Math.abs(rawFrac - 0.25) < 0.015) item.fraction = 0.25;
       else item.fraction = Number(rawFrac.toFixed(3));
     } else {
       item.fraction = item.fraction || 1;
     }
-
-    // ensure kcalPerPortion if missing (use gramsPerPortion * CAL_PER_G if possible)
     if (typeof item.kcalPerPortion !== 'number') {
       const calpg = CAL_PER_G[item.id] !== undefined ? CAL_PER_G[item.id] : 0.8;
       item.kcalPerPortion = Math.round((item.gramsPerPortion || DEFAULT_GRAMS[item.id] || 100) * calpg);
     }
-
-    // leave _imgOverride and id intact if present
   });
-
-  // prefer totalCalories when provided by index
   if (!('totalCalories' in p) || typeof p.totalCalories !== 'number') {
     p.totalCalories = totalCaloriesPayloadFromPositions(p.positions || []);
   } else {
@@ -212,14 +192,13 @@ function normalizePayload(p){
   }
 }
 
-/* Render base (unscaled) - positions for side items use sideSlot when available */
 function renderBase(targetBase){
   targetBase.innerHTML = '';
   const slots = computeSideSlotsForCanvas(targetBase.parentElement);
   const plateBg = document.createElement('div');
   plateBg.style.position='absolute';
   plateBg.style.left='50%'; plateBg.style.top='50%';
-  plateBg.style.width='var(--plate-pct)'; plateBg.style.height='var(--plate-pct)';
+  plateBg.style.width='480px'; plateBg.style.height='480px';
   plateBg.style.transform='translate(-50%,-50%)'; plateBg.style.borderRadius='50%';
   plateBg.style.background='transparent';
   targetBase.appendChild(plateBg);
@@ -248,7 +227,6 @@ function renderBase(targetBase){
     img.alt = p.label || p.id || '';
     img.classList.remove('clip-half'); img.style.transform = '';
 
-    // exact fraction handling (halves => clip, quarters => scale)
     const frac = (typeof p.fraction === 'number') ? p.fraction : 1;
     if (Math.abs(frac - 0.5) < 0.001) img.classList.add('clip-half');
     else if (frac < 0.5) img.style.transform = `scale(${Math.max(0.25, Math.min(1, frac))})`;
@@ -258,7 +236,6 @@ function renderBase(targetBase){
   });
 }
 
-/* Build scaled overlay (on-plate items only) */
 function buildScaledOverlay(targetOverlay){
   targetOverlay.innerHTML = '';
   const scaledContainer = document.createElement('div');
@@ -270,9 +247,9 @@ function buildScaledOverlay(targetOverlay){
   scaledGroup.className = 'scaledGroup';
   scaledGroup.style.position='absolute';
   scaledGroup.style.left='50%'; scaledGroup.style.top='50%';
-  scaledGroup.style.width = getComputedStyle(document.documentElement).getPropertyValue('--plate-pct') || '72%';
-  scaledGroup.style.height = getComputedStyle(document.documentElement).getPropertyValue('--plate-pct') || '72%';
-  scaledGroup.style.transform = 'translate(-50%,-50%) scale(var(--overlay-baseline))';
+  scaledGroup.style.width = '480px';
+  scaledGroup.style.height = '480px';
+  scaledGroup.style.transform = 'translate(-50%,-50%) scale(1)';
   scaledGroup.style.transformOrigin = '50% 50%';
 
   const svgNS = 'http://www.w3.org/2000/svg';
@@ -316,7 +293,6 @@ function buildScaledOverlay(targetOverlay){
   targetOverlay.style.display = 'block';
 }
 
-/* Calorie helpers */
 function totalCaloriesFromMap(map){
   let sum = 0;
   Object.keys(map || {}).forEach(id => {
@@ -343,14 +319,12 @@ function totalCaloriesPayload(){
   return Math.max(0, Math.round(totalCaloriesPayloadFromPositions(payload.positions || [])));
 }
 
-/* Draw annulus starting flush with plate edge */
 function drawAnnulus(annNode, scale){
   annNode.innerHTML = '';
   if (!scale || isNaN(scale)) return;
   const canvas = annNode.parentElement;
   const canvasRect = canvas.getBoundingClientRect();
-  const platePct = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--plate-pct')) / 100;
-  const baseDia = Math.min(canvasRect.width, canvasRect.height) * platePct;
+  const baseDia = 480; // plate diameter in px
   const scaledDia = Math.max(2, baseDia * scale);
 
   const ann = document.createElement('div');
@@ -371,7 +345,6 @@ function drawAnnulus(annNode, scale){
   annNode.appendChild(ann);
 }
 
-/* Compute scale */
 function computeScaleFromCalories(targetMap){
   const actualCal = Math.max(1, totalCaloriesPayload());
   const targetCal = Math.max(0, totalCaloriesFromMap(targetMap || {}));
@@ -379,12 +352,9 @@ function computeScaleFromCalories(targetMap){
   return Math.max(0.12, Math.min(3.0, Math.sqrt(targetCal / actualCal)));
 }
 
-/* Run compare */
 function runCompare(targetOverlay, targetBase, annNode, captionEl, targetMap, title){
   if (!payload) { alert('No saved plate'); return; }
-
   targetOverlay.innerHTML = ''; annNode.innerHTML = '';
-
   buildScaledOverlay(targetOverlay);
   const scale = computeScaleFromCalories(targetMap);
 
@@ -397,7 +367,6 @@ function runCompare(targetOverlay, targetBase, annNode, captionEl, targetMap, ti
   const scaledGroup = targetOverlay._scaledGroup;
   if (scaledGroup) {
     scaledGroup.style.transition = 'transform 850ms cubic-bezier(.2,.9,.2,1)';
-    // replace baseline transform with computed scale so visual change equals scale value
     requestAnimationFrame(()=> scaledGroup.style.transform = `translate(-50%,-50%) scale(${scale})`);
   }
 
@@ -412,7 +381,6 @@ function runCompare(targetOverlay, targetBase, annNode, captionEl, targetMap, ti
   }, 900);
 }
 
-/* Clear compare */
 function clearCompare(targetOverlay, targetBase, annNode, captionEl){
   targetOverlay.innerHTML = ''; delete targetOverlay._scaledGroup; annNode.innerHTML = '';
   Array.from(targetBase.querySelectorAll('.itemWrapper')).forEach(el => {
@@ -421,7 +389,6 @@ function clearCompare(targetOverlay, targetBase, annNode, captionEl){
   captionEl.textContent = 'Comparison cleared. Template remains colored.';
 }
 
-/* Recommended portions -> grams using DEFAULT_GRAMS so calorie targets align with index */
 function portionsToGramsMap(portions){
   const g = {};
   Object.keys(portions||{}).forEach(id => {
@@ -439,10 +406,8 @@ document.getElementById('resetAllBtn').addEventListener('click', ()=> {
   clearCompare(overRec, baseRec, annRec, capRec);
   clearCompare(overReal, baseReal, annReal, capReal);
 });
-
 document.getElementById('cmpRecommendedBtn').addEventListener('click', ()=> runCompare(overRec, baseRec, annRec, capRec, recommendedGrams, 'Recommended (Finland) vs Estimate'));
 document.getElementById('clearRecommendedBtn').addEventListener('click', ()=> clearCompare(overRec, baseRec, annRec, capRec));
-
 document.getElementById('cmpRealityBtn').addEventListener('click', ()=> {
   const raw = prompt('Enter target grams JSON mapping (e.g. { "potato": 200, "apple": 100 }) — leave empty to use recommended');
   let target = null;
@@ -468,6 +433,9 @@ document.getElementById('clearRealityBtn').addEventListener('click', ()=> clearC
   renderBase(baseRec);
   renderBase(baseReal);
 })();
+
+/* expose helper so debugging is easy in console */
+function normalizePayload(p){ /* forward to earlier-defined normalizePayload body for readability */ }
 </script>
 </body>
 </html>
