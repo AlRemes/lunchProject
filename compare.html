@@ -6,8 +6,8 @@
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <style>
   :root {
-    --plate-wrapper-size: 520px; /* wrapper used in index.html */
-    --plate-diameter: 480px;     /* exact plate diameter used in index.html */
+    --plate-wrapper-size: 520px;
+    --plate-diameter: 480px;
   }
 
   body{font-family:Arial;margin:14px;background:#f6f6f7}
@@ -20,7 +20,7 @@
   .panelTitle{font-weight:600}
   .canvasRow{display:flex;gap:18px;align-items:flex-start}
 
-  /* wrapper matches index.html */
+  /* wrapper matches index */
   .plateCanvas{
     position:relative;
     width:var(--plate-wrapper-size);
@@ -68,7 +68,6 @@
   .spacer{flex:1}
   .annulus{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);border-radius:50%;pointer-events:none;opacity:0.95;box-sizing:border-box}
   .hidden-onplate { opacity:0; transform:scale(0.98); transition:opacity 220ms ease, transform 220ms ease; pointer-events:none; }
-
   @media (max-width:1000px){
     :root{ --plate-wrapper-size:420px; --plate-diameter:380px; }
     .scaledGroup{ width:var(--plate-diameter); height:var(--plate-diameter); }
@@ -107,7 +106,7 @@
           </div>
 
           <div>
-            <div class="caption" id="captionRecommended">Press Run Compare to scale the plate based on total calories (user plate vs recommended). The annulus shows growth (green) or shrink (red).</div>
+            <div class="caption" id="captionRecommended">Press Run Compare to scale the plate based on total calories (user plate vs recommended). Side items remain fixed; on-plate items will scale relative to their centers. Original items remain visible as grey ghost during comparison.</div>
           </div>
         </div>
       </div>
@@ -138,17 +137,20 @@
   </div>
 
 <script>
-/*
-  Changes implemented:
-  - Plate area (yellow background) is scaled along with overlay items so the annulus inner edge aligns with the plate edge visually.
-  - While comparing, a ghost (greyed) duplicate of the original on-plate items is shown behind the scaled overlay so users can compare before/after visually.
-  - Ghost items are removed when clearing comparison or rerunning with different target.
-  - Preserves fractions, bread_variant, _imgOverride, grams, fraction and sideSlot passed from index.html.
-  - Uses payload.totalCalories when present.
+/* Requested changes implemented:
+ - Before Run Compare: original colored items (base) are visible; no silhouette/ghost shown.
+ - When running a comparison:
+    * a grey ghost duplicate appears behind (so original is visible as background silhouette)
+    * on-plate items are scaled individually around their own centers (translate + rotate + scale),
+      so each item grows/shrinks from its own center instead of moving toward/away from plate center.
+    * the yellow plate background (plate-bg) is scaled the same as items so annulus inner edge aligns visually.
+    * side items remain unchanged (colored) and are not scaled.
+ - Clearing the comparison removes ghosts and restores original plate size.
 */
 
 const SESSION_KEY = 'plate_positions_fallback';
 
+/* calorie and image mappings */
 const CAL_PER_G = {
   potato: 0.77, sausage: 2.5, carrot: 0.41,
   bread_variant: 2.5, bread: 2.5, apple: 0.52,
@@ -168,6 +170,7 @@ const DEFAULT_GRAMS = {
 
 let payload = null;
 
+/* DOM refs */
 const baseRec = document.getElementById('baseRecommended');
 const annRec  = document.getElementById('annulusRecommended');
 const overRec = document.getElementById('overlayRecommended');
@@ -184,6 +187,7 @@ function loadPayload(){
   try { return JSON.parse(raw); } catch(e){ return null; }
 }
 
+/* compute side slots similar to index layout for canvas */
 function computeSideSlotsForCanvas(canvas) {
   const cardRect = canvas.getBoundingClientRect();
   const plateDiameter = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--plate-diameter')) || 480;
@@ -199,6 +203,7 @@ function computeSideSlotsForCanvas(canvas) {
   return slots;
 }
 
+/* normalize payload but preserve index-provided metadata exactly */
 function normalizePayload(p){
   (p.positions || []).forEach(item => {
     if (typeof item.gramsPerPortion !== 'number') item.gramsPerPortion = item.gramsPerPortion || (DEFAULT_GRAMS[item.id] || 100);
@@ -227,12 +232,12 @@ function normalizePayload(p){
   }
 }
 
-/* render base layer and create a plate-bg element we can scale */
+/* render base layer (original items visible). side items are always colored and not scaled later. */
 function renderBase(targetBase){
   targetBase.innerHTML = '';
   const slots = computeSideSlotsForCanvas(targetBase.parentElement);
 
-  // plate-bg element (exact plate area); attach class for selection
+  // plate-bg element we will scale when comparing so annulus lines up
   const plateBg = document.createElement('div');
   plateBg.className = 'plate-bg';
   plateBg.style.position='absolute';
@@ -277,8 +282,7 @@ function renderBase(targetBase){
   });
 }
 
-/* Build overlay that contains a ghostGroup (grey duplicates at original size) and scaledGroup (the new scaled items).
-   ghostGroup stays at scale 1; scaledGroup will be transformed to scale(target) */
+/* Build overlay with ghostGroup and scaledGroup. This is created only when running a comparison. */
 function buildOverlayWithGhost(targetOverlay){
   targetOverlay.innerHTML = '';
 
@@ -287,7 +291,6 @@ function buildOverlayWithGhost(targetOverlay){
   scaledContainer.style.position='absolute'; scaledContainer.style.left='0'; scaledContainer.style.top='0';
   scaledContainer.style.width='100%'; scaledContainer.style.height='100%';
 
-  // ghost: grey duplicates at original size, centered over plate area
   const ghostGroup = document.createElement('div');
   ghostGroup.className = 'ghostGroup';
   ghostGroup.style.position='absolute';
@@ -299,7 +302,6 @@ function buildOverlayWithGhost(targetOverlay){
   ghostGroup.style.pointerEvents = 'none';
   ghostGroup.style.zIndex = 10;
 
-  // scaled: will be transformed by runCompare
   const scaledGroup = document.createElement('div');
   scaledGroup.className = 'scaledGroup';
   scaledGroup.style.position='absolute';
@@ -311,24 +313,11 @@ function buildOverlayWithGhost(targetOverlay){
   scaledGroup.style.pointerEvents = 'none';
   scaledGroup.style.zIndex = 20;
 
-  // Add perfect circle svg to scaledGroup (keeps circular appearance)
-  const svgNS = 'http://www.w3.org/2000/svg';
-  const svg = document.createElementNS(svgNS,'svg');
-  svg.setAttribute('viewBox','0 0 100 100');
-  svg.setAttribute('preserveAspectRatio','xMidYMid meet');
-  svg.className = 'scaledSvg';
-  svg.style.position='absolute'; svg.style.left='0'; svg.style.top='0'; svg.style.width='100%'; svg.style.height='100%';
-  const circle = document.createElementNS(svgNS,'circle');
-  circle.setAttribute('cx','50'); circle.setAttribute('cy','50'); circle.setAttribute('r','49.5');
-  circle.setAttribute('fill','transparent'); circle.setAttribute('stroke','transparent');
-  svg.appendChild(circle);
-  scaledGroup.appendChild(svg);
-
-  // append on-plate items to ghostGroup and scaledGroup using same pixel coords
+  // Append on-plate items to both groups using same coordinates; side items are not included here (they remain on base)
   (payload.positions || []).forEach(p => {
     if (p.placement !== 'onplate') return;
 
-    // ghost item (greyed)
+    // ghost item (grey)
     const gw = document.createElement('div');
     gw.className = 'itemWrapper';
     gw.style.position='absolute';
@@ -349,7 +338,7 @@ function buildOverlayWithGhost(targetOverlay){
     gw.appendChild(gimg);
     ghostGroup.appendChild(gw);
 
-    // scaled item (colored)
+    // scaled (colored) item — initial transform keeps per-item centering; scaling applied per-item later
     const sw = document.createElement('div');
     sw.className = 'itemWrapper';
     sw.style.position='absolute';
@@ -357,7 +346,10 @@ function buildOverlayWithGhost(targetOverlay){
     sw.style.top  = (p.y||0) + 'px';
     sw.style.width = (p.sizePx||48) + 'px';
     sw.style.height = (p.sizePx||48) + 'px';
-    sw.style.transform = `translate(-50%,-50%) rotate(${p.rotationDeg||0}deg)`;
+    // Important: set data-rotate and data-base-transform so we can build transform with scale around item center
+    sw.dataset.rotate = (p.rotationDeg||0);
+    sw.dataset.base = 'translate(-50%,-50%)';
+    sw.style.transform = `translate(-50%,-50%) rotate(${p.rotationDeg||0}deg) scale(1)`;
     const simg = document.createElement('img');
     simg.src = (p._imgOverride || CATALOG_IMG[p.id] || ('images/' + (p.id || 'unknown') + '.svg'));
     simg.alt = p.label || p.id || '';
@@ -373,7 +365,6 @@ function buildOverlayWithGhost(targetOverlay){
   scaledContainer.appendChild(scaledGroup);
   targetOverlay.appendChild(scaledContainer);
 
-  // store refs for later scaling/removal
   targetOverlay._ghostGroup = ghostGroup;
   targetOverlay._scaledGroup = scaledGroup;
   targetOverlay.style.display = 'block';
@@ -406,17 +397,16 @@ function totalCaloriesPayload(){
   return Math.max(0, Math.round(totalCaloriesPayloadFromPositions(payload.positions || [])));
 }
 
-/* Draw annulus whose inner edge lines up exactly with the current visible plate edge.
-   We will scale the plate-bg element itself so the annulus inner edge aligns with the scaled plate. */
+/* Draw annulus with inner edge aligned to plate edge (plate-bg will be scaled to match) */
 function drawAnnulus(annNode, scale){
   annNode.innerHTML = '';
   if (!scale || isNaN(scale)) return;
-
   const baseDia = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--plate-diameter')) || 480;
   const scaledDia = Math.max(2, baseDia * scale);
 
   const ann = document.createElement('div');
   ann.className = 'annulus';
+
   if (scale >= 1) {
     const outer = scaledDia;
     const thickness = Math.max(4, (scaledDia - baseDia) / 2);
@@ -438,7 +428,7 @@ function drawAnnulus(annNode, scale){
   annNode.appendChild(ann);
 }
 
-/* compute scale from calories */
+/* compute scale */
 function computeScaleFromCalories(targetMap){
   const actualCal = Math.max(1, totalCaloriesPayload());
   const targetCal = Math.max(0, totalCaloriesFromMap(targetMap || {}));
@@ -446,11 +436,16 @@ function computeScaleFromCalories(targetMap){
   return Math.max(0.12, Math.min(3.0, Math.sqrt(targetCal / actualCal)));
 }
 
-/* run compare: build overlay with ghost, scale overlay group, scale the actual plate-bg element (so annulus lines up) */
+/* run compare:
+   - create ghost + scaled overlay
+   - scale plate-bg element so yellow plate shrinks/grows visually
+   - scale each on-plate item individually around its center (translate+rotate+scale)
+   - leave side items unchanged and colored
+*/
 function runCompare(targetOverlay, targetBase, annNode, captionEl, targetMap, title){
   if (!payload) { alert('No saved plate'); return; }
 
-  // clear previous
+  // clear previous overlay and annulus
   targetOverlay.innerHTML = '';
   annNode.innerHTML = '';
 
@@ -458,28 +453,33 @@ function runCompare(targetOverlay, targetBase, annNode, captionEl, targetMap, ti
 
   const scale = computeScaleFromCalories(targetMap);
 
-  // hide base on-plate items visually? keep base colored but we show ghost behind scaled items
+  // hide base on-plate items visually (we rely on ghost behind scaled items to show original)
   Array.from(targetBase.querySelectorAll('.itemWrapper')).forEach(el => {
     if (el.dataset.onplate === '1') el.classList.add('hidden-onplate');
   });
 
-  // Scale the plate-bg element to the same scale so the yellow plate shrinks/grows visually
+  // scale the plate-bg element to match items
   const plateBg = targetBase.querySelector('.plate-bg');
   if (plateBg) {
     plateBg.style.transition = 'transform 700ms cubic-bezier(.2,.9,.2,1)';
     requestAnimationFrame(()=> plateBg.style.transform = `translate(-50%,-50%) scale(${scale})`);
   }
 
-  // draw annulus attached to the parent; inner edge will line up with plate edge because plate-bg scaled the same
+  // draw annulus; because plate-bg scaled, inner edge will align visually
   drawAnnulus(annNode, scale);
 
+  // scale each item individually around its center so it expands/shrinks from itself
   const scaledGroup = targetOverlay._scaledGroup;
   if (scaledGroup) {
-    scaledGroup.style.transition = 'transform 700ms cubic-bezier(.2,.9,.2,1)';
-    requestAnimationFrame(()=> scaledGroup.style.transform = `translate(-50%,-50%) scale(${scale})`);
+    Array.from(scaledGroup.querySelectorAll('.itemWrapper')).forEach(sw => {
+      const rotate = Number(sw.dataset.rotate || 0);
+      // build transform: translate(-50%,-50%) rotate(...) scale(scale)
+      sw.style.transition = 'transform 700ms cubic-bezier(.2,.9,.2,1)';
+      requestAnimationFrame(()=> sw.style.transform = `translate(-50%,-50%) rotate(${rotate}deg) scale(${scale})`);
+    });
   }
 
-  // caption: only percentage difference
+  // caption: percent difference only
   setTimeout(()=> {
     const actualCal = Math.round(totalCaloriesPayload());
     const targetCal = Math.round(totalCaloriesFromMap(targetMap || {}));
@@ -488,24 +488,26 @@ function runCompare(targetOverlay, targetBase, annNode, captionEl, targetMap, ti
     else diffPct = targetCal > 0 ? 100 : 0;
     const sign = diffPct > 0 ? '+' : '';
     captionEl.textContent = `${title || ''}: ${sign}${diffPct}% difference`;
-  }, 750);
+  }, 800);
 }
 
-/* clear compare: remove overlay & ghost, reset plate scale, show base items again */
+/* clear compare: remove overlay and ghost, reset plate scale, show base items again */
 function clearCompare(targetOverlay, targetBase, annNode, captionEl){
-  // remove overlay (ghost + scaled)
   targetOverlay.innerHTML = '';
   delete targetOverlay._ghostGroup;
   delete targetOverlay._scaledGroup;
 
   // reset plate scale
   const plateBg = targetBase.querySelector('.plate-bg');
-  if (plateBg) plateBg.style.transform = 'translate(-50%,-50%) scale(1)';
+  if (plateBg) {
+    plateBg.style.transition = 'transform 420ms ease';
+    plateBg.style.transform = 'translate(-50%,-50%) scale(1)';
+  }
 
   // clear annulus
   annNode.innerHTML = '';
 
-  // show base colored items again
+  // show base colored items again and remove any hidden class
   Array.from(targetBase.querySelectorAll('.itemWrapper')).forEach(el => {
     if (el.dataset.onplate === '1') el.classList.remove('hidden-onplate');
   });
@@ -513,7 +515,7 @@ function clearCompare(targetOverlay, targetBase, annNode, captionEl){
   captionEl.textContent = 'Comparison cleared. Template remains colored.';
 }
 
-/* helpers for recommended mapping (uses DEFAULT_GRAMS so calories align with index) */
+/* recommended mapping helper using DEFAULT_GRAMS */
 function portionsToGramsMap(portions){
   const g = {};
   Object.keys(portions||{}).forEach(id => {
@@ -531,12 +533,8 @@ document.getElementById('resetAllBtn').addEventListener('click', ()=> {
   clearCompare(overRec, baseRec, annRec, capRec);
   clearCompare(overReal, baseReal, annReal, capReal);
 });
-
-document.getElementById('cmpRecommendedBtn').addEventListener('click', ()=> {
-  runCompare(overRec, baseRec, annRec, capRec, recommendedGrams, 'Recommended (Finland) vs Estimate');
-});
+document.getElementById('cmpRecommendedBtn').addEventListener('click', ()=> runCompare(overRec, baseRec, annRec, capRec, recommendedGrams, 'Recommended (Finland) vs Estimate'));
 document.getElementById('clearRecommendedBtn').addEventListener('click', ()=> clearCompare(overRec, baseRec, annRec, capRec));
-
 document.getElementById('cmpRealityBtn').addEventListener('click', ()=> {
   const raw = prompt('Enter target grams JSON mapping (e.g. { "potato": 200, "apple": 100 }) — leave empty to use recommended');
   let target = null;
@@ -544,7 +542,7 @@ document.getElementById('cmpRealityBtn').addEventListener('click', ()=> {
   else {
     try { target = JSON.parse(raw); } catch(e){ alert('Invalid JSON'); return; }
   }
-  // remove previous overlay/ghost before running new one
+  // remove previous overlay (if any) and rerun
   clearCompare(overReal, baseReal, annReal, capReal);
   runCompare(overReal, baseReal, annReal, capReal, target, 'Reality vs Estimate');
 });
@@ -565,12 +563,11 @@ document.getElementById('clearRealityBtn').addEventListener('click', ()=> clearC
   renderBase(baseReal);
 })();
 
-/* Expose small helper for debugging in console if needed */
-window._debug_payload = () => payload;
+/* small helper exposures for debugging */
+window._payload = () => payload;
 
-/* Local helper definitions used above (kept here to avoid duplication in-file) */
-function normalizePayload(p){ /* noop: actual normalize already defined earlier; this placeholder keeps lint happy */ }
-function renderBase(targetBase){ /* noop: actual renderBase is defined earlier; placeholder */ }
+/* The actual implementations of normalizePayload and renderBase are defined above.
+   If you need them as global functions for debugging, they are already available in closure. */
 </script>
 </body>
 </html>
