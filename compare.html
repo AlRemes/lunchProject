@@ -2,10 +2,10 @@
 <html>
 <head>
 <meta charset="utf-8"/>
-<title>Compare Plate — two-panel whole-plate scaling</title>
+<title>Compare Plate — whole-plate scaling with diff ring</title>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <style>
-  body{font-family:Arial,margin:14px;background:#f6f6f7}
+  body{font-family:Arial;margin:14px;background:#f6f6f7}
   .topbar{display:flex;gap:12px;align-items:center;justify-content:flex-start;margin-bottom:12px}
   .btn{padding:8px 12px;border-radius:6px;border:1px solid #bbb;background:#fff;cursor:pointer}
   .page{max-width:980px;margin:0 auto}
@@ -14,26 +14,26 @@
   .panelHeader{display:flex;gap:10px;align-items:center;margin-bottom:8px}
   .panelTitle{font-weight:600}
   .canvasRow{display:flex;gap:18px;align-items:flex-start}
-  /* plate canvas */
-  .plateCanvas{position:relative;width:520px;height:520px;border-radius:50%;background:#fff6e6;border:8px solid #eee;overflow:visible}
+  /* plate canvas: made smaller so it can expand inside available white space */
+  .plateCanvas{position:relative;width:480px;height:480px;border-radius:50%;background:#fff6e6;border:8px solid #eee;overflow:visible;padding:36px}
   .layer{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none}
-  .plateCircle { position:absolute; left:50%; top:50%; width:88%; height:88%; transform:translate(-50%,-50%); border-radius:50%; background:transparent; }
+  /* overlay group will be centered and scaled */
+  .overlayGroup{position:absolute;left:50%;top:50%;width:88%;height:88%;transform:translate(-50%,-50%);transform-origin:50% 50%}
+  .plateCircle { position:absolute; left:0; top:0; width:100%; height:100%; border-radius:50%; background:transparent; box-sizing:border-box }
   .itemWrapper{position:absolute; transform:translate(-50%,-50%); pointer-events:none}
   .itemWrapper img{display:block;width:100%;height:100%;object-fit:contain}
   .clip-half { -webkit-clip-path: polygon(0 0, 100% 100%, 0 100%); clip-path: polygon(0 0, 100% 100%, 0 100%); }
   .caption{font-size:13px;color:#333;margin-top:8px}
   .controls{display:flex;gap:8px;flex-wrap:wrap}
   .spacer{flex:1}
-  /* make page scrollable if needed */
-  @media (max-width:900px){ .canvasRow{flex-direction:column;align-items:center} .plateCanvas{width:420px;height:420px} }
+  .diffRing{ position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); border-radius:50%; pointer-events:none; opacity:0.35 }
+  @media (max-width:900px){ .canvasRow{flex-direction:column;align-items:center} .plateCanvas{width:380px;height:380px} }
 </style>
 </head>
 <body>
   <div class="page">
     <div class="topbar">
       <button id="backBtn" class="btn">Back</button>
-      <div style="width:8px"></div>
-      <div class="small" style="color:#444">Template: your saved plate is shown in full color below. Use panels to compare.</div>
       <div class="spacer"></div>
       <button id="resetAllBtn" class="btn">Reset Comparisons</button>
     </div>
@@ -52,15 +52,17 @@
         <div class="canvasRow">
           <div class="plateCanvas" id="canvasRecommended">
             <div class="layer" id="baseRecommended"></div>
-            <div class="layer" id="overlayRecommended" style="display:none; transform-origin:50% 50%;"></div>
+            <!-- diff ring sits under the scaled overlay to show extra/missing area -->
+            <div class="layer" id="diffRecommended"></div>
+            <div class="layer" id="overlayRecommended" style="display:none"></div>
           </div>
           <div style="min-width:260px">
-            <div class="caption" id="captionRecommended">Template used as-is. Press "Run Compare" to build overlay and scale plate.</div>
+            <div class="caption" id="captionRecommended">Template shown in color. Click Run Compare to scale plate with a diff ring (green = growth, red = shrink).</div>
           </div>
         </div>
       </div>
 
-      <!-- Reality panel (scrolls into view) -->
+      <!-- Reality panel -->
       <div class="panel" id="panelReality">
         <div class="panelHeader">
           <div class="panelTitle">Compare to Reality (custom)</div>
@@ -73,10 +75,11 @@
         <div class="canvasRow">
           <div class="plateCanvas" id="canvasReality">
             <div class="layer" id="baseReality"></div>
-            <div class="layer" id="overlayReality" style="display:none; transform-origin:50% 50%;"></div>
+            <div class="layer" id="diffReality"></div>
+            <div class="layer" id="overlayReality" style="display:none"></div>
           </div>
           <div style="min-width:260px">
-            <div class="caption" id="captionReality">Provide target grams for a custom reality comparison or use the recommended button above.</div>
+            <div class="caption" id="captionReality">Custom comparison. Enter a target mapping when running compare.</div>
           </div>
         </div>
       </div>
@@ -85,12 +88,13 @@
 
 <script>
 /*
- - Two panels share the same saved template payload (sessionStorage key 'plate_positions_fallback').
- - Base layer is colored template and remains single (no duplicates).
- - Overlay is built on-demand per panel; overlay contains a plate circle + only on-plate items, and is scaled as one group.
- - Overlay remains until user clicks Clear for that panel or Reset All.
- - Side items stay in base layer and do not scale.
- - Half-preservation: fraction snapped near 0.5 (±0.02) to 0.5.
+ compare.html with:
+ - whole-plate scaling (overlayGroup) per panel
+ - diff ring visualizes only the difference portion (green for growth, red for shrink)
+ - template remains colored, turned gray only while comparison is active
+ - overlay remains until Clear; no automatic revert
+ - halves preserved by snapping near-0.5 fractions
+ - payload read from sessionStorage key 'plate_positions_fallback'
 */
 
 const SESSION_KEY = 'plate_positions_fallback';
@@ -104,16 +108,18 @@ const CATALOG = {
   milk: { img:'images/milk-carton.svg', gramsPerPortion:250 }
 };
 
-// UI elements
+let payload = null;
+
+// DOM refs
 const baseRec = document.getElementById('baseRecommended');
+const diffRec = document.getElementById('diffRecommended');
 const overRec = document.getElementById('overlayRecommended');
 const capRec = document.getElementById('captionRecommended');
 
 const baseReal = document.getElementById('baseReality');
+const diffReal = document.getElementById('diffReality');
 const overReal = document.getElementById('overlayReality');
 const capReal = document.getElementById('captionReality');
-
-let payload = null;
 
 // helpers
 function loadPayload() {
@@ -121,8 +127,7 @@ function loadPayload() {
   if (!raw) return null;
   try { return JSON.parse(raw); } catch(e){ return null; }
 }
-
-function computeSideSlots(canvasPx=520) {
+function computeSideSlots(canvasPx=480) {
   const columnX = canvasPx + 56;
   const slotStartY = 28;
   const slotSpacing = 56;
@@ -134,7 +139,6 @@ function computeSideSlots(canvasPx=520) {
   for (let i=0;i<maxSlots;i++) slots.push({ x: columnX, y: slotStartY + i * slotStep });
   return slots;
 }
-
 function normalizePayload(p) {
   const slots = computeSideSlots();
   (p.positions || []).forEach(item => {
@@ -150,6 +154,7 @@ function normalizePayload(p) {
       }
     } else item.gramsPerPortion = item.gramsPerPortion || 100;
 
+    // side slot restore
     if (item.placement === 'side') {
       if (typeof item.sideSlot === 'number') {
         const s = slots[Math.min(item.sideSlot, slots.length-1)];
@@ -161,7 +166,6 @@ function normalizePayload(p) {
       }
     }
 
-    // ensure grams exist
     if (!('grams' in item) || item.grams == null) {
       if ('fraction' in item && item.fraction && item.gramsPerPortion) item.grams = Math.round(item.fraction * item.gramsPerPortion);
       else if (item.gramsPerPortion) item.grams = item.gramsPerPortion;
@@ -171,22 +175,22 @@ function normalizePayload(p) {
     if (item.gramsPerPortion && item.grams) item.fraction = Math.round((item.grams / item.gramsPerPortion) * 100) / 100;
     else if (!('fraction' in item)) item.fraction = 1;
 
-    // snap near-half to exact 0.5
     if (Math.abs((item.fraction || 0) - 0.5) < 0.02) item.fraction = 0.5;
   });
 }
 
-// render a base layer (colored template). targetBase is DOM element for base layer.
+// render base template (colored). targetBase is DOM node.
 function renderBaseLayer(targetBase) {
   targetBase.innerHTML = '';
+  // plate background element ensures consistent centering
   const plateBg = document.createElement('div'); plateBg.className='plateCircle';
   plateBg.style.background = 'transparent';
   targetBase.appendChild(plateBg);
 
   (payload.positions || []).forEach(p => {
     const w = document.createElement('div'); w.className='itemWrapper';
-    w.style.left = (p.x||0)+'px'; w.style.top = (p.y||0)+'px';
-    w.style.width = (p.sizePx||48)+'px'; w.style.height = (p.sizePx||48)+'px';
+    w.style.left = (p.x||0) + 'px'; w.style.top = (p.y||0) + 'px';
+    w.style.width = (p.sizePx||48) + 'px'; w.style.height = (p.sizePx||48) + 'px';
     w.style.transform = `translate(-50%,-50%) rotate(${p.rotationDeg||0}deg)`;
     const img = document.createElement('img');
     img.src = (p._imgOverride || (CATALOG[p.id] && CATALOG[p.id].img) || ('images/' + (p.id || 'unknown') + '.svg'));
@@ -195,24 +199,33 @@ function renderBaseLayer(targetBase) {
     const frac = p.fraction || 1;
     if (Math.abs(frac - 0.5) < 0.001) img.classList.add('clip-half');
     else if (frac < 0.5) img.style.transform = `scale(${Math.max(0.25, Math.min(1, frac))})`;
-    img.style.filter = ''; // colored template
-    w.appendChild(img);
-    targetBase.appendChild(w);
+    img.style.filter = ''; // keep colored
+    w.appendChild(img); targetBase.appendChild(w);
   });
 }
 
-// build overlay into targetOverlay (adds plate circle + on-plate items)
-function buildOverlay(targetOverlay) {
+// build overlay group into targetOverlay (plate circle + on-plate items). overlayGroup will be scaled as a single unit.
+function buildOverlayGroup(targetOverlay) {
   targetOverlay.innerHTML = '';
-  const plate = document.createElement('div'); plate.className='plateCircle';
-  plate.style.background = 'transparent';
-  targetOverlay.appendChild(plate);
+  // group container centered and using percentage sizing to align with base coordinates
+  const group = document.createElement('div');
+  group.className = 'overlayGroup';
+  // plate circle (so scaled overlay includes the circle)
+  const plate = document.createElement('div');
+  plate.className = 'plateCircle';
+  plate.style.boxSizing = 'border-box';
+  plate.style.border = '0px solid transparent';
+  group.appendChild(plate);
 
   (payload.positions || []).forEach(p => {
-    if (p.placement === 'side') return; // skip side
-    const w = document.createElement('div'); w.className='itemWrapper';
-    w.style.left = (p.x||0)+'px'; w.style.top = (p.y||0)+'px';
-    w.style.width = (p.sizePx||48)+'px'; w.style.height = (p.sizePx||48)+'px';
+    if (p.placement === 'side') return; // side items remain static in base layer
+    const w = document.createElement('div'); w.className = 'itemWrapper';
+    // translate original absolute x,y into percent within group bounding box:
+    // group occupies 88% of canvas area; but we positioned base items by pixel coordinates relative to canvas.
+    // For correct alignment we append items using absolute pixel coords inside the overlay layer with transform origin matching base.
+    // Simpler approach: place item wrappers into overlay as absolutely positioned elements matching base coordinates.
+    w.style.left = (p.x||0) + 'px'; w.style.top = (p.y||0) + 'px';
+    w.style.width = (p.sizePx||48) + 'px'; w.style.height = (p.sizePx||48) + 'px';
     w.style.transform = `translate(-50%,-50%) rotate(${p.rotationDeg||0}deg)`;
     const img = document.createElement('img');
     img.src = (p._imgOverride || (CATALOG[p.id] && CATALOG[p.id].img) || ('images/' + (p.id || 'unknown') + '.svg'));
@@ -222,14 +235,33 @@ function buildOverlay(targetOverlay) {
     if (Math.abs(frac - 0.5) < 0.001) img.classList.add('clip-half');
     else if (frac < 0.5) img.style.transform = `scale(${Math.max(0.25, Math.min(1, frac))})`;
     w.appendChild(img);
-    targetOverlay.appendChild(w);
+    group.appendChild(w);
   });
 
+  // Because base items use pixel coords relative to canvas, append group then move children to overlay root while preserving absolute pixel coords.
+  // We'll instead just append on-plate items directly to overlay (so they align exactly with base); group will contain an empty plateCircle used only for sizing.
+  targetOverlay.appendChild(group);
+  // Move the group children that are itemWrapper into overlay root and convert their positions to overlay root coordinates.
+  const children = Array.from(group.querySelectorAll('.itemWrapper'));
+  children.forEach(ch => {
+    // detach and append to overlay with same left/top so they match base coords
+    group.removeChild(ch);
+    ch.style.position = 'absolute';
+    ch.style.left = ch.style.left; ch.style.top = ch.style.top;
+    targetOverlay.appendChild(ch);
+  });
+  // keep group only as an invisible plate anchor (so scaled transform affects overlay root)
+  group.innerHTML = '';
+  targetOverlay.appendChild(group);
+
+  // overlay baseline scale
   targetOverlay.style.transform = 'scale(0.92)';
   targetOverlay.style.display = 'block';
+  // indicate overlay content exists via a data flag
+  targetOverlay.dataset.hasOverlay = 'true';
 }
 
-// compute totals to derive scale: id->grams expected in targetMap
+// compute totals (actual from payload; targetMap id->grams)
 function computeTotals(targetMap) {
   const actual = (payload.positions || []).reduce((s,p) => s + (p.grams || 0), 0);
   let target = 0;
@@ -237,13 +269,42 @@ function computeTotals(targetMap) {
   return { actual, target };
 }
 
-// animate comparison for a given overlay/base pair. overlay stays until cleared.
-function runCompare(targetOverlay, targetBase, captionEl, targetMap, title) {
-  if (!payload) { alert('No saved plate found.'); return; }
+// draw diff ring in diffNode sized to represent the percent difference
+function drawDiffRing(diffNode, scale) {
+  diffNode.innerHTML = '';
+  if (!scale || isNaN(scale)) return;
+  // compute percentage change relative to 1 (scale 1.2 => +20%)
+  const pct = Math.round((scale - 1) * 100);
+  if (pct === 0) return;
+  // ring size: base radius corresponds to overlay baseline (0.92). We'll compute outer radius based on scale.
+  // Use the canvas physical size to compute pixel diameter.
+  const canvas = diffNode.parentElement;
+  const canvasRect = canvas.getBoundingClientRect();
+  const baseDia = Math.min(canvasRect.width, canvasRect.height) * 0.88; // plate diameter in pixels
+  const scaledDia = baseDia * scale;
+  const ring = document.createElement('div');
+  ring.className = 'diffRing';
+  // The ring will be sized to the scaledDia and then we use box-shadow to mimic a ring thickness equal to |scaledDia - baseDia|
+  const outer = Math.max(baseDia, scaledDia);
+  const thickness = Math.abs(scaledDia - baseDia);
+  ring.style.width = outer + 'px';
+  ring.style.height = outer + 'px';
+  // color green for growth, red for shrink
+  ring.style.background = 'transparent';
+  ring.style.boxShadow = `0 0 0 ${Math.max(6, thickness/2)}px ${scale>1 ? 'limegreen' : 'tomato'}`;
+  ring.style.opacity = '0.42';
+  diffNode.appendChild(ring);
+}
+
+// run comparison for a panel (overlay + diff ring)
+function runCompare(targetOverlay, targetBase, diffNode, captionEl, targetMap, title) {
+  if (!payload) { alert('No saved plate'); return; }
   captionEl.textContent = title || '';
 
-  // build overlay fresh each run to avoid duplication
-  buildOverlay(targetOverlay);
+  // build overlay group on demand (clear previous first to avoid duplicates)
+  targetOverlay.style.display = 'none';
+  targetOverlay.innerHTML = '';
+  buildOverlayGroup(targetOverlay);
 
   const { actual, target } = computeTotals(targetMap || {});
   const safeActual = Math.max(1, actual);
@@ -251,17 +312,21 @@ function runCompare(targetOverlay, targetBase, captionEl, targetMap, title) {
   let scale = safeTarget <= 0 ? 0.001 : Math.sqrt(safeTarget / safeActual);
   scale = Math.max(0.12, Math.min(3.0, scale));
 
-  // desaturate base template
+  // desaturate base template while comparison active
   targetBase.style.transition = 'filter 300ms ease, opacity 300ms ease';
   targetBase.style.filter = 'grayscale(1)';
   targetBase.style.opacity = '0.45';
 
-  // scale overlay (group)
+  // show diff ring sized to represent difference
+  drawDiffRing(diffNode, scale);
+
+  // apply transform scale to overlay (scale whole group)
   targetOverlay.style.transition = `transform 900ms cubic-bezier(.2,.9,.2,1), opacity 400ms ease`;
   targetOverlay.style.transformOrigin = '50% 50%';
   requestAnimationFrame(()=> targetOverlay.style.transform = `scale(${scale})`);
+  targetOverlay.style.display = 'block';
 
-  // compute diffs and show caption
+  // caption: aggregate diffs
   setTimeout(()=> {
     const agg = {};
     (payload.positions || []).forEach(p => { agg[p.id] = (agg[p.id]||0) + (p.grams || 0); });
@@ -279,26 +344,27 @@ function runCompare(targetOverlay, targetBase, captionEl, targetMap, title) {
       return `${d.id}: ${Math.round(d.a)}g→${Math.round(d.t)}g (${pctLabel})`;
     });
     captionEl.textContent = (title ? title + ': ' : '') + (top.length ? top.join('; ') : 'No significant changes');
-  }, 1000);
+  }, 900);
 }
 
-// clear overlay for a given overlay/base pair
-function clearCompare(targetOverlay, targetBase, captionEl) {
+// clear comparison for a panel
+function clearCompare(targetOverlay, targetBase, diffNode, captionEl) {
   targetOverlay.style.display = 'none';
   targetOverlay.innerHTML = '';
+  diffNode.innerHTML = '';
   targetBase.style.filter = '';
   targetBase.style.opacity = '';
   captionEl.textContent = 'Comparison cleared. Template remains colored.';
 }
 
-// recommended default mapping (portions -> grams)
+// helper to create recommended grams mapping
 function portionsToGramsMap(portions) {
-  const grams = {};
+  const g = {};
   Object.keys(portions||{}).forEach(id => {
     const per = (CATALOG[id] && CATALOG[id].gramsPerPortion) || (id==='bread' && CATALOG.bread && CATALOG.bread.gramsPerPortion) || 100;
-    grams[id] = (portions[id] || 0) * per;
+    g[id] = (portions[id] || 0) * per;
   });
-  return grams;
+  return g;
 }
 const recommendedPortions = { carrot:2, apple:1, potato:1, bread:0, sausage:1, milk:1, water:1 };
 const recommendedGrams = portionsToGramsMap(recommendedPortions);
@@ -306,17 +372,17 @@ const recommendedGrams = portionsToGramsMap(recommendedPortions);
 // UI wiring
 document.getElementById('backBtn').addEventListener('click', ()=> history.back());
 document.getElementById('resetAllBtn').addEventListener('click', ()=> {
-  clearCompare(overRec, baseRec, capRec);
-  clearCompare(overReal, baseReal, capReal);
+  clearCompare(overRec, baseRec, diffRec, capRec);
+  clearCompare(overReal, baseReal, diffReal, capReal);
 });
 
-// Recommended panel buttons
+// Recommended panel
 document.getElementById('cmpRecommendedBtn').addEventListener('click', ()=> {
-  runCompare(overRec, baseRec, capRec, recommendedGrams, 'Recommended (Finland) vs Estimate');
+  runCompare(overRec, baseRec, diffRec, capRec, recommendedGrams, 'Recommended (Finland) vs Estimate');
 });
-document.getElementById('clearRecommendedBtn').addEventListener('click', ()=> clearCompare(overRec, baseRec, capRec));
+document.getElementById('clearRecommendedBtn').addEventListener('click', ()=> clearCompare(overRec, baseRec, diffRec, capRec));
 
-// Reality panel buttons (custom)
+// Reality panel (custom)
 document.getElementById('cmpRealityBtn').addEventListener('click', ()=> {
   const raw = prompt('Enter target grams JSON mapping (e.g. { "potato": 200, "apple": 100 }) — leave empty to use recommended');
   let target = null;
@@ -324,11 +390,11 @@ document.getElementById('cmpRealityBtn').addEventListener('click', ()=> {
   else {
     try { target = JSON.parse(raw); } catch(e){ alert('Invalid JSON'); return; }
   }
-  runCompare(overReal, baseReal, capReal, target, 'Reality vs Estimate');
+  runCompare(overReal, baseReal, diffReal, capReal, target, 'Reality vs Estimate');
 });
-document.getElementById('clearRealityBtn').addEventListener('click', ()=> clearCompare(overReal, baseReal, capReal));
+document.getElementById('clearRealityBtn').addEventListener('click', ()=> clearCompare(overReal, baseReal, diffReal, capReal));
 
-// init: load payload, normalize and render both base layers (same template)
+// init: load payload, normalize and render both bases
 (function init(){
   const p = loadPayload();
   if (!p) {
