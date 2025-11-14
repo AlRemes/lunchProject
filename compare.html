@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8"/>
-<title>Compare Plate — scale by total calories (with OWID reality)</title>
+<title>Compare Plate — local OWID reality</title>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <style>
   :root { --plate-wrapper-size:520px; --plate-diameter:480px; }
@@ -30,8 +30,8 @@
   .sideColumn{position:absolute;top:14px;right:18px;display:flex;flex-direction:column;gap:10px;pointer-events:none}
   .sideColumn.left{right:auto;left:18px}
   .sideItem{width:86px;height:86px;display:flex;align-items:center;justify-content:center}
-  /* plate-area is the element we scale; we will size annulus to match this element's computed size */
-  .plate-area {
+  /* wrapper that will be scaled so annulus and plate remain perfectly aligned */
+  .plateWrap {
     position:absolute;
     left:50%; top:50%;
     width:var(--plate-diameter); height:var(--plate-diameter);
@@ -39,13 +39,17 @@
     transform-origin:50% 50%;
     border-radius:50%;
     pointer-events:none;
-    background:transparent;
+    box-sizing:border-box;
+  }
+  .plateInner {
+    position:relative;
+    width:100%; height:100%;
+    border-radius:50%;
     box-sizing:border-box;
   }
   .ghostGroup, .scaledGroup{
-    position:absolute; left:50%; top:50%;
-    width:var(--plate-diameter); height:var(--plate-diameter);
-    transform:translate(-50%,-50%) scale(1);
+    position:absolute; left:0; top:0;
+    width:100%; height:100%;
     transform-origin:50% 50%;
     pointer-events:none; overflow:visible; border-radius:50%; box-sizing:border-box;
   }
@@ -75,7 +79,7 @@
     <div class="topbar">
       <div style="display:flex;gap:12px;align-items:center">
         <button id="backBtn" class="btn">Back</button>
-        <div class="small" style="color:#444">Compare your plate to Finland recommendation and to average lunches around the world (Our World in Data)</div>
+        <div class="small" style="color:#444">Compare your plate to Finland recommendation and to local OWID country lunch estimates (local CSV + metadata)</div>
       </div>
       <div style="display:flex;gap:8px;align-items:center">
         <button id="resetAllBtn" class="btn">Reset Comparisons</button>
@@ -109,7 +113,7 @@
 
       <div class="panel">
         <div class="panelHeader">
-          <div class="panelTitle">Compare to Reality (global lunch estimates)</div>
+          <div class="panelTitle">Compare to Reality (from local OWID files)</div>
           <div class="spacer"></div>
           <div class="controlsRow">
             <select id="countrySelect" class="countrySelect"></select>
@@ -127,7 +131,7 @@
           </div>
 
           <div>
-            <div class="caption" id="captionReality">Select a country (data from Our World in Data) and click Compare. Daily kcal (latest year) are divided by 3 for a lunch estimate and used to build a comparison plate.</div>
+            <div class="caption" id="captionReality">Select a country (local OWID CSV + metadata) and click Compare. Daily kcal (latest year) are divided by 3 for a lunch estimate and used to build a comparison plate.</div>
             <div class="note">Countries included: Finland, Sweden, Norway, Denmark, United States, Canada, Brazil, Argentina, Chile, China, India, Japan, Indonesia, Australia, New Zealand, Nigeria, Ethiopia, Kenya, South Africa, Egypt, Morocco</div>
           </div>
         </div>
@@ -137,16 +141,22 @@
 
 <script>
 /*
-  Key fixes in this file:
-   - Use OWID grapher JSON endpoint (grapher/<slug>.json) to fetch per-country timeseries with CORS-friendly response.
-   - Robustly extract the latest year value per country and populate the select.
-   - Annulus sizing: compute scaled diameter from the same base (--plate-diameter) and always draw annulus/mini-plate at the same transform origin so edges align.
-   - Keep compare visuals (ghost vs scaled).
+  This compare.html expects the following files to be served from the same origin (e.g., GitHub Pages / same repo):
+   - daily-per-capita-caloric-supply.csv
+   - daily-per-capita-caloric-supply.metadata.json
+
+  Behavior:
+   - Parse the local CSV using simple but robust logic (handles quoted fields).
+   - Use the metadata JSON to find the data column if possible; otherwise fall back to CSV headers.
+   - For each country in COUNTRY_LIST, pick the latest non-null year value.
+   - Compute lunchKcal = dailyKcal / 3, convert to grams (avgKcalPerGram), build grams map, and run the existing compare.
+   - Plate scaling uses a wrapper (.plateWrap) so annulus and scaled items stay aligned.
 */
 
-/* CONFIG */
 const SESSION_KEY = 'plate_positions_fallback';
-const OWID_JSON_URL = 'https://ourworldindata.org/grapher/daily-per-capita-caloric-supply.json'; // grapher JSON endpoint
+
+const LOCAL_CSV = 'daily-per-capita-caloric-supply.csv';
+const LOCAL_META = 'daily-per-capita-caloric-supply.metadata.json';
 
 const CAL_PER_G = { potato:0.77, sausage:2.5, carrot:0.41, bread_variant:2.5, bread:2.5, apple:0.52, orange:0.47, milk:0.64, water:0.0 };
 const CATALOG_IMG = {
@@ -156,10 +166,11 @@ const CATALOG_IMG = {
   apple:'images/apple.svg', milk:'images/milk-carton.svg', water:'images/glass-of-water.svg'
 };
 const DEFAULT_GRAMS = { potato:150, sausage:75, carrot:75, bread:40, bread_variant:40, apple:150, milk:250, water:200 };
+
 const COUNTRY_LIST = ["Finland","Sweden","Norway","Denmark","United States","Canada","Brazil","Argentina","Chile","China","India","Japan","Indonesia","Australia","New Zealand","Nigeria","Ethiopia","Kenya","South Africa","Egypt","Morocco"];
 
 let payload = null;
-let latestKcalByCountry = {}; // { country: { year, value } }
+let latestKcalByCountry = {}; // { country: {year, kcal} }
 
 /* DOM refs */
 const countrySelect = document.getElementById('countrySelect');
@@ -178,11 +189,132 @@ const overReal = document.getElementById('overlayReality');
 const sideReal = document.getElementById('sideReal');
 const capReal  = document.getElementById('captionReality');
 
-/* UTILITIES */
+/* UTIL: CSV parser that handles quoted fields and commas inside quotes */
+function parseCsv(text){
+  const rows = [];
+  let cur = [];
+  let curVal = '';
+  let inQuotes = false;
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i];
+    const nxt = text[i+1];
+    if (ch === '"') {
+      if (inQuotes && nxt === '"') { curVal += '"'; i += 2; continue; } // escaped quote
+      inQuotes = !inQuotes; i++; continue;
+    }
+    if (!inQuotes && (ch === '\n' || ch === '\r')) {
+      // handle CRLF
+      if (ch === '\r' && text[i+1] === '\n') i++;
+      cur.push(curVal); rows.push(cur); cur = []; curVal = ''; i++; continue;
+    }
+    if (!inQuotes && ch === ',') {
+      cur.push(curVal); curVal = ''; i++; continue;
+    }
+    curVal += ch; i++;
+  }
+  // push last
+  if (curVal !== '' || cur.length > 0) cur.push(curVal);
+  if (cur.length) rows.push(cur);
+  // convert to array of objects if header present
+  if (rows.length < 2) return { header: rows[0] || [], rows: [] };
+  const header = rows[0].map(h => h.trim());
+  const data = rows.slice(1).map(r => {
+    const obj = {};
+    for (let j=0;j<header.length;j++) obj[header[j]] = r[j] !== undefined ? r[j] : '';
+    return obj;
+  });
+  return { header, rows: data };
+}
+
+/* Load metadata JSON and CSV from same origin (local files in repo) */
+async function loadLocalOwid(){
+  latestKcalByCountry = {};
+  try {
+    const [metaRes, csvRes] = await Promise.all([ fetch(LOCAL_META), fetch(LOCAL_CSV) ]);
+    if (!metaRes.ok || !csvRes.ok) throw new Error('Failed fetching local files: ' + metaRes.status + ' / ' + csvRes.status);
+    const meta = await metaRes.json();
+    const csvText = await csvRes.text();
+    const parsed = parseCsv(csvText);
+    // Determine value column name: prefer metadata short name or variable name
+    let valueCol = null;
+    if (meta && meta.variables && Array.isArray(meta.variables)) {
+      // try to find variable that looks numeric/has shortName/value
+      const candidate = meta.variables.find(v => v.shortUnit || v.name || v.display);
+      if (candidate && candidate.dataColumn) valueCol = candidate.dataColumn;
+    }
+    // fallback: find column that likely holds values: many OWID CSVs have columns by country and year rows,
+    // but our CSV is likely in long form: columns include Entity (country), Year, and Daily supply of calories per person
+    // We'll try common header names
+    const hdr = parsed.header.map(h => h.toLowerCase());
+    const possibleNames = ['daily supply of calories per person','daily-per-capita-caloric-supply','value','total','daily supply','calories'];
+    if (!valueCol) {
+      for (const n of possibleNames) {
+        const idx = hdr.findIndex(h => h.includes(n));
+        if (idx !== -1) { valueCol = parsed.header[idx]; break; }
+      }
+    }
+    // columns that may indicate country and year
+    const countryCol = parsed.header.find(h => /country|entity|name/i.test(h)) || parsed.header[0];
+    const yearCol = parsed.header.find(h => /year/i.test(h)) || parsed.header[1];
+
+    // If still no valueCol, inspect parsed.rows for a numeric column (other than country/year)
+    if (!valueCol) {
+      if (parsed.rows.length) {
+        const sample = parsed.rows[0];
+        for (const key of Object.keys(sample)) {
+          if (key === countryCol || key === yearCol) continue;
+          const v = sample[key];
+          if (v !== '' && !isNaN(Number(v))) { valueCol = key; break; }
+        }
+      }
+    }
+
+    // Build per-country latest value
+    const byCountry = {};
+    parsed.rows.forEach(r => {
+      const country = (r[countryCol] || '').trim();
+      const year = Number(r[yearCol]);
+      const val = valueCol ? (r[valueCol] === '' ? NaN : Number(r[valueCol])) : NaN;
+      if (!country || !year || isNaN(val)) return;
+      if (!byCountry[country]) byCountry[country] = {};
+      byCountry[country][year] = val;
+    });
+
+    COUNTRY_LIST.forEach(c => {
+      const data = byCountry[c];
+      if (!data) { latestKcalByCountry[c] = null; return; }
+      const yrs = Object.keys(data).map(Number).filter(y => !isNaN(y));
+      if (!yrs.length) { latestKcalByCountry[c] = null; return; }
+      const latest = Math.max(...yrs);
+      latestKcalByCountry[c] = { year: latest, kcal: data[latest] };
+    });
+
+    return true;
+  } catch (e) {
+    console.error('Failed to load local OWID files', e);
+    COUNTRY_LIST.forEach(c => latestKcalByCountry[c] = null);
+    return false;
+  }
+}
+
+/* Populate select */
+function populateCountrySelect(){
+  countrySelect.innerHTML = '';
+  COUNTRY_LIST.forEach(c => {
+    const info = latestKcalByCountry[c];
+    const opt = document.createElement('option');
+    opt.value = c;
+    opt.textContent = info && info.kcal ? `${c} — ${Math.round(info.kcal)} kcal/day (${info.year})` : `${c} — (no data)`;
+    countrySelect.appendChild(opt);
+  });
+}
+
+/* small helpers used by rendering logic */
 function escapeAttr(s){ return String(s||'').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 function resolveImage(p){ if (p._imgOverride) return p._imgOverride; if (p.id === 'bread_variant') return CATALOG_IMG.bread_variant; if (p.id && CATALOG_IMG[p.id]) return CATALOG_IMG[p.id]; return 'images/' + (p.id || 'unknown') + '.svg'; }
 
-/* compute side slots for side column */
+/* Rendering base plate and overlay — wrapper-scaling approach */
 function computeSideSlots(canvasEl){
   const rect = canvasEl.getBoundingClientRect();
   const plateDiameter = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--plate-diameter')) || 480;
@@ -196,13 +328,14 @@ function computeSideSlots(canvasEl){
   return slots;
 }
 
-/* RENDERING: base/overlay/annulus are adapted versions of prior code but with box-sizing-consistent annulus sizing */
 function renderBase(targetBase, sideContainer){
   targetBase.innerHTML = ''; sideContainer.innerHTML = '';
-  const plateArea = document.createElement('div');
-  plateArea.className = 'plate-area';
-  plateArea.style.background = 'transparent';
-  targetBase.appendChild(plateArea);
+  // create wrapper we scale (.plateWrap) and inside it a .plateInner for items
+  const wrap = document.createElement('div'); wrap.className = 'plateWrap';
+  const inner = document.createElement('div'); inner.className = 'plateInner';
+  wrap.appendChild(inner);
+  targetBase.appendChild(wrap);
+
   const slots = computeSideSlots(targetBase.parentElement);
   (payload.positions || []).forEach(p => {
     if (p.placement === 'side') {
@@ -222,25 +355,20 @@ function renderBase(targetBase, sideContainer){
     const frac = (typeof p.fraction === 'number') ? p.fraction : 1;
     if (Math.abs(frac - 0.5) < 0.001) img.classList.add('clip-half');
     else if (frac < 0.5) img.style.transform = `scale(${Math.max(0.25, Math.min(1, frac))})`;
-    w.appendChild(img); targetBase.appendChild(w);
+    w.appendChild(img); inner.appendChild(w);
   });
 }
 
-/* overlay builder: ghost (grey), ghost-inner (faint), scaled (colored) */
+/* Build overlay groups inside the same plateWrap (so scaling wrapper keeps them aligned) */
 function buildOverlay(targetOverlay){
   targetOverlay.innerHTML = '';
-  const container = document.createElement('div'); container.className='scaledContainer';
-  container.style.position='absolute'; container.style.left='0'; container.style.top='0'; container.style.width='100%'; container.style.height='100%';
-  const ghost = document.createElement('div'); ghost.className='ghostGroup';
-  const ghostInner = document.createElement('div'); ghostInner.className='ghostGroup ghost-inner-group';
-  const scaled = document.createElement('div'); scaled.className='scaledGroup';
-  const svgNS = 'http://www.w3.org/2000/svg';
-  const svg = document.createElementNS(svgNS,'svg'); svg.setAttribute('viewBox','0 0 100 100');
-  svg.setAttribute('preserveAspectRatio','xMidYMid meet'); svg.className='scaledSvg';
-  svg.style.position='absolute'; svg.style.left='0'; svg.style.top='0'; svg.style.width='100%'; svg.style.height='100%';
-  const circle = document.createElementNS(svgNS,'circle'); circle.setAttribute('cx','50'); circle.setAttribute('cy','50'); circle.setAttribute('r','49.5');
-  circle.setAttribute('fill','transparent'); circle.setAttribute('stroke','transparent'); svg.appendChild(circle); scaled.appendChild(svg);
+  // container matches plateWrap size; for simplicity create sibling plateWrap-like container
+  const wrap = document.createElement('div'); wrap.className = 'plateWrap';
+  const ghost = document.createElement('div'); ghost.className = 'ghostGroup';
+  const ghostInner = document.createElement('div'); ghostInner.className = 'ghostGroup ghost-inner-group';
+  const scaled = document.createElement('div'); scaled.className = 'scaledGroup';
 
+  // add items
   (payload.positions || []).forEach(p => {
     if (p.placement !== 'onplate') return;
     // ghost
@@ -250,7 +378,7 @@ function buildOverlay(targetOverlay){
     gw.style.transform = `translate(-50%,-50%) rotate(${p.rotationDeg||0}deg)`;
     const gimg = document.createElement('img'); gimg.src=p._imgOverride||resolveImage(p); gimg.alt=p.label||p.id||'';
     gimg.className='ghost-img'; gw.appendChild(gimg); ghost.appendChild(gw);
-    // ghost-inner (slightly smaller)
+    // ghost-inner
     const giw = document.createElement('div'); giw.className='itemWrapper';
     giw.style.position='absolute'; giw.style.left=(p.x||0)+'px'; giw.style.top=(p.y||0)+'px';
     giw.style.width=(p.sizePx||48)+'px'; giw.style.height=(p.sizePx||48)+'px';
@@ -266,24 +394,21 @@ function buildOverlay(targetOverlay){
     simg.className='scaled-img'; sw.appendChild(simg); scaled.appendChild(sw);
   });
 
-  container.appendChild(ghost); container.appendChild(ghostInner); container.appendChild(scaled);
-  targetOverlay.appendChild(container);
+  wrap.appendChild(ghost); wrap.appendChild(ghostInner); wrap.appendChild(scaled);
+  targetOverlay.appendChild(wrap);
+  targetOverlay._wrap = wrap;
   targetOverlay._ghost = ghost; targetOverlay._ghostInner = ghostInner; targetOverlay._scaled = scaled;
 }
 
-/* Draw annulus or filled mini-plate. Important: sizes are computed from the same CSS variable (--plate-diameter)
-   and we explicitly set box-sizing:border-box so border thickness doesn't inflate the perceived outer size.
-*/
+/* draw annulus or mini-plate centered; because we scale the wrapper, set sizes relative to wrapper base size */
 function drawAnnulus(node, scale){
   node.innerHTML = '';
   if (!scale || isNaN(scale)) return;
   const base = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--plate-diameter')) || 480;
   const scaled = Math.max(2, Math.round(base * scale));
-
   if (scale >= 1) {
-    // Growth: annulus outside the current plate; thickness computed so inner edge aligns with plate
     const ann = document.createElement('div'); ann.className='annulus';
-    ann.style.position='absolute'; ann.style.left='50%'; ann.style.top='50%'; ann.style.transform='translate(-50%,-50%)';
+    ann.style.left='50%'; ann.style.top='50%'; ann.style.position='absolute'; ann.style.transform='translate(-50%,-50%)';
     ann.style.boxSizing='border-box';
     const outer = scaled;
     const thickness = Math.max(4, Math.round((scaled - base) / 2));
@@ -291,38 +416,21 @@ function drawAnnulus(node, scale){
     ann.style.border = `${thickness}px solid rgba(88,196,104,0.95)`;
     node.appendChild(ann);
   } else {
-    // Shrink: draw filled mini-plate sized to scaled diameter and a rim at the same small size
     const fill = document.createElement('div'); fill.className='overlayFill';
     fill.style.width = scaled + 'px'; fill.style.height = scaled + 'px';
-    fill.style.background = 'rgba(220,70,70,0.22)'; fill.style.border = '1px solid rgba(220,70,70,0.28)';
-    fill.style.left='50%'; fill.style.top='50%'; fill.style.transform='translate(-50%,-50%)'; fill.style.boxSizing='border-box';
-    node.appendChild(fill);
-
+    fill.style.background = 'rgba(220,70,70,0.22)'; fill.style.border='1px solid rgba(220,70,70,0.28)';
+    fill.style.left='50%'; fill.style.top='50%'; fill.style.position='absolute'; fill.style.transform='translate(-50%,-50%)';
+    fill.style.boxSizing='border-box'; node.appendChild(fill);
     const rim = document.createElement('div'); rim.className='annulus';
     rim.style.position='absolute'; rim.style.left='50%'; rim.style.top='50%'; rim.style.transform='translate(-50%,-50%)';
     rim.style.boxSizing='border-box';
     const outer = scaled; const thickness = Math.max(2, Math.round(outer * 0.02));
     rim.style.width = outer + 'px'; rim.style.height = outer + 'px';
-    rim.style.border = `${thickness}px solid rgba(220,70,70,0.22)`;
-    node.appendChild(rim);
+    rim.style.border = `${thickness}px solid rgba(220,70,70,0.22)`; node.appendChild(rim);
   }
 }
 
-/* calories helpers */
-function totalCaloriesPayloadFromPositions(positions){
-  return (positions || []).reduce((s,p) => {
-    if (typeof p.kcalPerPortion === 'number' && typeof p.gramsPerPortion === 'number' && p.gramsPerPortion > 0) {
-      const calPerG = p.kcalPerPortion / p.gramsPerPortion; return s + (p.grams || 0) * calPerG;
-    }
-    const calPerG = CAL_PER_G[p.id] !== undefined ? CAL_PER_G[p.id] : 0.8; return s + (p.grams || 0) * calPerG;
-  }, 0);
-}
-function totalCaloriesPayload(){
-  if (payload && typeof payload.totalCalories === 'number') return Math.max(0, Math.round(payload.totalCalories));
-  return Math.max(0, Math.round(totalCaloriesPayloadFromPositions(payload.positions || [])));
-}
-
-/* conversion and target map builder */
+/* calories conversion and target map builder */
 const avgKcalPerGram = 1.5;
 function kcalToGrams(kcal){ return Math.max(0, Math.round(kcal / avgKcalPerGram)); }
 function buildTargetGramsMap(totalGrams){
@@ -339,38 +447,70 @@ function buildTargetGramsMap(totalGrams){
   return map;
 }
 
-/* runCompare for both panels (uses overlay/annulus functions). targetMap is grams per id */
+/* totals helpers */
+function totalCaloriesFromMap(map){
+  let sum = 0;
+  Object.keys(map || {}).forEach(id => {
+    const grams = map[id] || 0;
+    const calPerG = CAL_PER_G[id] !== undefined ? CAL_PER_G[id] : 0.8;
+    sum += grams * calPerG;
+  });
+  return sum;
+}
+function totalCaloriesPayloadFromPositions(positions){
+  return (positions || []).reduce((s,p) => {
+    if (typeof p.kcalPerPortion === 'number' && typeof p.gramsPerPortion === 'number' && p.gramsPerPortion > 0) {
+      const calPerG = p.kcalPerPortion / p.gramsPerPortion; return s + (p.grams || 0) * calPerG;
+    }
+    const calPerG = CAL_PER_G[p.id] !== undefined ? CAL_PER_G[p.id] : 0.8; return s + (p.grams || 0) * calPerG;
+  }, 0);
+}
+function totalCaloriesPayload(){
+  if (payload && typeof payload.totalCalories === 'number') return Math.max(0, Math.round(payload.totalCalories));
+  return Math.max(0, Math.round(totalCaloriesPayloadFromPositions(payload.positions || [])));
+}
+
+/* compute scale & placement */
 function computeScaleFromCalories(targetMap){
   const actual = Math.max(1, totalCaloriesPayload());
-  const target = Math.max(0, Object.keys(targetMap||{}).reduce((s,k)=>s + (targetMap[k]||0) * (CAL_PER_G[k] !== undefined ? CAL_PER_G[k] : 0.8), 0));
-  if (target <= 0) return 0.001; return Math.max(0.12, Math.min(3.0, Math.sqrt(target / actual)));
+  const target = Math.max(0, totalCaloriesFromMap(targetMap || {}));
+  if (target <= 0) return 0.001;
+  return Math.max(0.12, Math.min(3.0, Math.sqrt(target / actual)));
 }
 function placeSideColumn(sideContainer, toRight){ if (!sideContainer) return; sideContainer.classList.remove('left'); if (!toRight) sideContainer.classList.add('left'); }
 
-function buildOverlayAndCompare(targetOverlay, targetBase, annNode, sideContainer, captionEl, targetMap, title){
+/* main compare sequence that uses wrapper scaling */
+function runCompare(targetOverlay, targetBase, annNode, sideContainer, captionEl, targetMap, title){
   if (!payload) { alert('No saved plate'); return; }
   targetOverlay.innerHTML = ''; annNode.innerHTML = ''; sideContainer.innerHTML = '';
   renderSideOnly(sideContainer, targetBase);
   buildOverlay(targetOverlay);
   const scale = computeScaleFromCalories(targetMap);
-  Array.from(targetBase.querySelectorAll('.itemWrapper')).forEach(el => { if (el.dataset.onplate === '1') el.classList.add('hidden-onplate'); });
-  const plateArea = targetBase.querySelector('.plate-area');
-  if (plateArea) { plateArea.style.transition = 'transform 700ms cubic-bezier(.2,.9,.2,1)'; requestAnimationFrame(()=> plateArea.style.transform = `translate(-50%,-50%) scale(${scale})`); }
+  // find the plateWrap in targetBase and apply scale
+  const wrap = targetBase.querySelector('.plateWrap');
+  if (wrap) {
+    wrap.style.transition = 'transform 700ms cubic-bezier(.2,.9,.2,1)';
+    requestAnimationFrame(()=> wrap.style.transform = `translate(-50%,-50%) scale(${scale})`);
+  }
   drawAnnulus(annNode, scale);
-  // style ghost/inner/scaled images
+  // style images
   const ghostImgs = targetOverlay._ghost ? Array.from(targetOverlay._ghost.querySelectorAll('img')) : [];
   const ghostInnerImgs = targetOverlay._ghostInner ? Array.from(targetOverlay._ghostInner.querySelectorAll('img')) : [];
   const scaledImgs = targetOverlay._scaled ? Array.from(targetOverlay._scaled.querySelectorAll('img')) : [];
-  ghostImgs.forEach(i=>i.className='ghost-img'); ghostInnerImgs.forEach(i=>i.className='ghost-inner'); scaledImgs.forEach(i=>i.className='scaled-img');
+  ghostImgs.forEach(i => i.className = 'ghost-img');
+  ghostInnerImgs.forEach(i => i.className = 'ghost-inner');
+  scaledImgs.forEach(i => i.className = 'scaled-img');
+  // scale each scaled item inside the overlay (scale applied via wrapper too; we keep transform-scale to 1 here,
+  // but still animate to ensure rotation/scale look right)
   if (targetOverlay._scaled) {
     Array.from(targetOverlay._scaled.querySelectorAll('.itemWrapper')).forEach(sw => {
       const rotate = Number(sw.dataset.rotate || 0);
       sw.style.transition = 'transform 700ms cubic-bezier(.2,.9,.2,1)';
-      requestAnimationFrame(()=> sw.style.transform = `translate(-50%,-50%) rotate(${rotate}deg) scale(${scale})`);
+      requestAnimationFrame(()=> sw.style.transform = `translate(-50%,-50%) rotate(${rotate}deg) scale(1)`);
     });
   }
   const actualCal = Math.round(totalCaloriesPayload());
-  const targetCal = Math.round(Object.keys(targetMap||{}).reduce((s,k)=>s + (targetMap[k]||0) * (CAL_PER_G[k] !== undefined ? CAL_PER_G[k] : 0.8), 0));
+  const targetCal = Math.round(totalCaloriesFromMap(targetMap || {}));
   placeSideColumn(sideContainer, targetCal >= actualCal);
   setTimeout(()=> {
     let diffPct = 0;
@@ -379,7 +519,7 @@ function buildOverlayAndCompare(targetOverlay, targetBase, annNode, sideContaine
     if (diffPct < 0) captionEl.textContent = `Recommendation is ${Math.abs(diffPct)}% lower than your plate`;
     else if (diffPct > 0) captionEl.textContent = `Recommendation is ${diffPct}% higher than your plate`;
     else captionEl.textContent = 'Recommendation matches your plate';
-  }, 750);
+  }, 800);
 }
 
 /* render only side items colored */
@@ -398,108 +538,13 @@ function renderSideOnly(sideContainer, targetBase){
   });
 }
 
-/* Clear compare */
+/* clear compare */
 function clearCompare(targetOverlay, targetBase, annNode, sideContainer, captionEl){
   targetOverlay.innerHTML = ''; annNode.innerHTML = ''; sideContainer.innerHTML = '';
-  const plateArea = targetBase.querySelector('.plate-area');
-  if (plateArea) { plateArea.style.transition = 'transform 300ms ease'; plateArea.style.transform = 'translate(-50%,-50%) scale(1)'; }
+  const wrap = targetBase.querySelector('.plateWrap');
+  if (wrap) { wrap.style.transition = 'transform 300ms ease'; wrap.style.transform = 'translate(-50%,-50%) scale(1)'; }
   Array.from(targetBase.querySelectorAll('.itemWrapper')).forEach(el => { if (el.dataset.onplate === '1') el.classList.remove('hidden-onplate'); });
   captionEl.textContent = 'Comparison cleared. Template remains colored.';
-}
-
-/* OWID JSON fetch and parsing — robust and CORS-friendly
-   The grapher JSON format contains:
-   - "data": { "<year>": { "<entity>": <value>, ... }, ... } OR series structure depending on endpoint.
-   Our endpoint returns a series per country; we iterate and pick latest non-null datapoint for our country list.
-*/
-async function loadOwidData(){
-  try {
-    const res = await fetch(OWID_JSON_URL);
-    if (!res.ok) throw new Error('OWID fetch failed: ' + res.status);
-    const json = await res.json();
-    // OWID grapher JSON format: an array "data" with objects { "year": <n>, "<country>": <val>, ... } OR series in "data" plus "dimension"
-    // Two robust approaches:
-    // 1) If json has property "data" as an array of rows with year and country keys, find latest value per country.
-    // 2) If json is a mapping of series, check "data" structure.
-    latestKcalByCountry = {};
-    // Attempt structure where json.data is array of {year, entity1:val1, ...}
-    if (Array.isArray(json.data)) {
-      // find available years and columns
-      const rows = json.data;
-      // rows look like { "year": 2022, "Finland": 3200, ... } sometimes; but grapher usually returns { "entity": "...", "year":.., "value":... } as series
-      // Check row shape
-      if (rows.length && rows[0].hasOwnProperty('year') && (rows[0].hasOwnProperty('country') || rows[0].hasOwnProperty('entity') || rows[0].hasOwnProperty('name'))) {
-        // case: array of {entity/country, year, value}
-        const byCountry = {};
-        rows.forEach(r => {
-          const country = r.entity || r.country || r.name;
-          const year = Number(r.year);
-          const val = (r.value == null ? NaN : Number(r.value));
-          if (!country || isNaN(year) || isNaN(val)) return;
-          if (!byCountry[country]) byCountry[country] = {};
-          byCountry[country][year] = val;
-        });
-        COUNTRY_LIST.forEach(c => {
-          const data = byCountry[c];
-          if (!data) { latestKcalByCountry[c] = null; return; }
-          const yrs = Object.keys(data).map(Number).filter(y=>!isNaN(y));
-          if (!yrs.length) { latestKcalByCountry[c] = null; return; }
-          const latest = Math.max(...yrs);
-          latestKcalByCountry[c] = { year: latest, kcal: data[latest] };
-        });
-      } else {
-        // case: rows are objects where columns are countries and year column is "year"
-        const years = rows.map(r => Number(r.year)).filter(y=>!isNaN(y));
-        const latestYear = Math.max(...years);
-        const latestRow = rows.find(r => Number(r.year) === latestYear);
-        COUNTRY_LIST.forEach(c => {
-          if (latestRow && latestRow.hasOwnProperty(c)) {
-            const v = Number(latestRow[c]);
-            latestKcalByCountry[c] = isNaN(v) ? null : { year: latestYear, kcal: v };
-          } else latestKcalByCountry[c] = null;
-        });
-      }
-    } else if (json.dimension && json.value) {
-      // fallback: grapher V2 sometimes provides series under json.values or json.data; try to parse known shapes
-      // Try parsing "data" object where keys are years mapping to country-keyed objects
-      if (json.data && typeof json.data === 'object') {
-        // json.data: { "1961": { "Finland": 3000, ... }, ... }
-        const byYear = json.data;
-        COUNTRY_LIST.forEach(c => {
-          let best = null;
-          Object.keys(byYear).forEach(y => {
-            const val = byYear[y] && byYear[y][c];
-            if (val != null && !isNaN(Number(val))) {
-              const year = Number(y);
-              if (!best || year > best.year) best = { year, kcal: Number(val) };
-            }
-          });
-          latestKcalByCountry[c] = best;
-        });
-      } else {
-        // As a last resort, try reading "columns" or "series"
-        COUNTRY_LIST.forEach(c => latestKcalByCountry[c] = null);
-      }
-    } else {
-      // Unknown JSON shape: populate nulls
-      COUNTRY_LIST.forEach(c => latestKcalByCountry[c] = null);
-    }
-  } catch (e) {
-    console.warn('Failed to load OWID data:', e);
-    COUNTRY_LIST.forEach(c => latestKcalByCountry[c] = null);
-  }
-}
-
-/* Populate select with labels and kcal info */
-function populateCountrySelect(){
-  countrySelect.innerHTML = '';
-  COUNTRY_LIST.forEach(c => {
-    const info = latestKcalByCountry[c];
-    const opt = document.createElement('option');
-    opt.value = c;
-    opt.textContent = info && info.kcal ? `${c} — ${Math.round(info.kcal)} kcal/day (${info.year})` : `${c} — (no data)`;
-    countrySelect.appendChild(opt);
-  });
 }
 
 /* UI wiring */
@@ -511,7 +556,7 @@ document.getElementById('resetAllBtn').addEventListener('click', ()=> {
 
 document.getElementById('cmpRecommendedBtn').addEventListener('click', ()=> {
   const recommendedMap = { carrot:150, apple:150, potato:150, bread_variant:0, sausage:75, milk:250, water:0 };
-  buildOverlayAndCompare(overRec, baseRec, annRec, sideRec, capRec, recommendedMap, 'Recommended (Finland) vs Estimate');
+  runCompare(overRec, baseRec, annRec, sideRec, capRec, recommendedMap, 'Recommended (Finland) vs Estimate');
 });
 document.getElementById('clearRecommendedBtn').addEventListener('click', ()=> clearCompare(overRec, baseRec, annRec, sideRec, capRec));
 
@@ -525,18 +570,17 @@ cmpRealityBtn.addEventListener('click', ()=> {
   const lunchKcal = dailyKcal / 3;
   const lunchGrams = kcalToGrams(lunchKcal);
   const gramsMap = buildTargetGramsMap(lunchGrams);
-  buildOverlayAndCompare(overReal, baseReal, annReal, sideReal, capReal, gramsMap, `Reality vs Estimate (${country})`);
+  runCompare(overReal, baseReal, annReal, sideReal, capReal, gramsMap, `Reality vs Estimate (${country})`);
 });
 
-/* init: load payload and OWID data then render */
+/* init: load saved plate payload from sessionStorage and the local OWID files, then populate UI */
 (async function init(){
-  // load user plate from sessionStorage
   try {
     const raw = sessionStorage.getItem(SESSION_KEY);
     if (raw) payload = JSON.parse(raw);
   } catch(e){ payload = null; }
   if (payload) {
-    // minimal normalization (ensures fraction exists)
+    // ensure fraction/grams exist
     (payload.positions || []).forEach(item => {
       if (typeof item.gramsPerPortion !== 'number') item.gramsPerPortion = item.gramsPerPortion || (DEFAULT_GRAMS[item.id] || 100);
       if (!('grams' in item) || item.grams == null) item.grams = item.grams || 0;
@@ -553,8 +597,8 @@ cmpRealityBtn.addEventListener('click', ()=> {
     capReal.textContent = 'No saved plate in sessionStorage under key: ' + SESSION_KEY;
   }
 
-  // fetch OWID JSON endpoint and populate select
-  await loadOwidData();
+  // load local OWID CSV + metadata
+  await loadLocalOwid();
   populateCountrySelect();
 })();
 </script>
