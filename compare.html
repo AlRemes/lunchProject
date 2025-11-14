@@ -58,6 +58,8 @@
   .scaledSvg{position:absolute;left:0;top:0;width:100%;height:100%}
   .itemWrapper{position:absolute; transform:translate(-50%,-50%); pointer-events:none}
   .itemWrapper img{display:block;width:100%;height:100%;object-fit:contain}
+  .ghost-img{filter:grayscale(100%) contrast(80%); opacity:0.45}
+  .scaled-img{filter:none; opacity:1}
   .clip-half { -webkit-clip-path: polygon(0 0, 100% 100%, 0 100%); clip-path: polygon(0 0, 100% 100%, 0 100%); }
   .caption{font-size:13px;color:#333;margin-top:8px;max-width:360px}
   .annulus{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);border-radius:50%;pointer-events:none;opacity:0.95;box-sizing:border-box}
@@ -100,7 +102,7 @@
           </div>
 
           <div>
-            <div class="caption" id="captionRecommended">Press Run Compare. Shrunk area is shown as a semi-transparent plate; growth uses an outer annulus. Side items stay fixed and colored.</div>
+            <div class="caption" id="captionRecommended">Press Run Compare. Recommendation will be shown as a colored scaled plate or annulus; original items are shown as grey ghost beneath the colored recommendation so you can compare.</div>
           </div>
         </div>
       </div>
@@ -132,16 +134,12 @@
   </div>
 
 <script>
-/*
-  Changes implemented in this file:
-  - When shrinking: the small colored filled "mini-plate" represents the recommendation area; the outer rim
-    is drawn to match the mini-plate (outer ring fixed so the visible plate doesn't look too big).
-  - When growing: green annulus is drawn outside the plate; original items are shown grey (ghost) and new scaled
-    items colored (so user sees original vs recommended).
-  - For the growth case specifically we ensure the original user items are greyed and the recommended (scaled)
-    items are colored. For the shrink case the reverse visual is kept (original is visible as colored ghost behind
-    the translucent small plate).
-  - Plate scaling uses a plate-area element so annulus and filled overlay align exactly.
+/* Behavior changes implemented:
+ - Always show original items as grey "ghost" layer.
+ - Always show recommendation as colored scaled layer (scaledGroup) placed on top.
+ - When recommendation is smaller (red), the recommendation is shown as a semi-transparent filled mini-plate (colored) plus colored scaled items on top; ghost remains visible beneath.
+ - When recommendation is larger (green), the recommendation is shown as colored scaled items and an outer annulus; original ghost remains visible beneath to allow direct comparison.
+ - Side items remain colored and are not scaled.
 */
 
 const SESSION_KEY = 'plate_positions_fallback';
@@ -152,7 +150,6 @@ const CAL_PER_G = {
   orange: 0.47, milk: 0.64, water: 0.0
 };
 
-/* image mapping (keeps bread_variant pointing to cheese-bread by default) */
 const CATALOG_IMG = {
   potato: 'images/potato.svg',
   sausage: 'images/sausage.svg',
@@ -232,7 +229,7 @@ function normalizePayload(p){
   }
 }
 
-/* Render base (original user plate) — side items colored and placed in side column */
+/* Render base visible plate items and side column (side items colored) */
 function renderBase(targetBase, sideContainer){
   targetBase.innerHTML = '';
   sideContainer.innerHTML = '';
@@ -280,7 +277,7 @@ function renderBase(targetBase, sideContainer){
   });
 }
 
-/* Resolve image path, prefer _imgOverride, handle bread variants */
+/* Resolve image path and prefer explicit variants or _imgOverride */
 function resolveImage(p){
   if (p._imgOverride) return p._imgOverride;
   if (p.id === 'bread_variant') return CATALOG_IMG.bread_variant;
@@ -290,7 +287,7 @@ function resolveImage(p){
   return 'images/' + (p.id || 'unknown') + '.svg';
 }
 
-/* Build overlay: ghostGroup (original) + scaledGroup (recommendation). Both present but styling differs per growth/shrink case. */
+/* Build overlay with ghostGroup (grey originals) and scaledGroup (colored recommendation) */
 function buildOverlay(targetOverlay){
   targetOverlay.innerHTML = '';
   const container = document.createElement('div');
@@ -316,7 +313,7 @@ function buildOverlay(targetOverlay){
   (payload.positions || []).forEach(p => {
     if (p.placement !== 'onplate') return;
 
-    // ghost element: original item placed exactly where user put it
+    // ghost (grey original)
     const gw = document.createElement('div');
     gw.className = 'itemWrapper';
     gw.style.position = 'absolute';
@@ -328,15 +325,14 @@ function buildOverlay(targetOverlay){
     const gimg = document.createElement('img');
     gimg.src = p._imgOverride || resolveImage(p);
     gimg.alt = p.label || p.id || '';
-    // will style (gray vs colored) later depending on growth/shrink
-    gimg.classList.remove('clip-half'); gimg.style.transform = '';
+    gimg.className = 'ghost-img';
     const gfrac = (typeof p.fraction === 'number') ? p.fraction : 1;
     if (Math.abs(gfrac - 0.5) < 0.001) gimg.classList.add('clip-half');
     else if (gfrac < 0.5) gimg.style.transform = `scale(${Math.max(0.25, Math.min(1, gfrac))})`;
     gw.appendChild(gimg);
     ghost.appendChild(gw);
 
-    // scaled (recommendation) item placed same coords; will be scaled around its center
+    // scaled (recommendation) — colored layer on top
     const sw = document.createElement('div');
     sw.className = 'itemWrapper';
     sw.style.position = 'absolute';
@@ -349,7 +345,7 @@ function buildOverlay(targetOverlay){
     const simg = document.createElement('img');
     simg.src = p._imgOverride || resolveImage(p);
     simg.alt = p.label || p.id || '';
-    simg.classList.remove('clip-half'); simg.style.transform = '';
+    simg.className = 'scaled-img';
     const sfrac = (typeof p.fraction === 'number') ? p.fraction : 1;
     if (Math.abs(sfrac - 0.5) < 0.001) simg.classList.add('clip-half');
     else if (sfrac < 0.5) simg.style.transform = `scale(${Math.max(0.25, Math.min(1, sfrac))})`;
@@ -389,14 +385,7 @@ function totalCaloriesPayload(){
   return Math.max(0, Math.round(totalCaloriesPayloadFromPositions(payload.positions || [])));
 }
 
-/*
-  drawAnnulus/updateOverlay:
-  - When scale >= 1 (recommendation larger): draw a green annulus outside the plate (as before).
-    Show original items GREY (ghost) and recommended (scaled) items in COLORed scaled-up positions.
-  - When scale < 1 (recommendation smaller): draw a semi-transparent red filled mini-plate of diameter = scaledDia,
-    and ensure the outer rim is set to scaledDia as well (outer ring fixed to small size) so the plate looks small.
-    Show original items colored behind the translucent mini-plate and recommended items colored (they overlap).
-*/
+/* Draw annulus/fill and keep outer rim consistent with scaled diameter */
 function drawAnnulus(node, scale){
   node.innerHTML = '';
   if (!scale || isNaN(scale)) return;
@@ -404,7 +393,6 @@ function drawAnnulus(node, scale){
   const scaled = Math.max(2, base * scale);
 
   if (scale >= 1) {
-    // Green annulus outside current plate
     const ann = document.createElement('div');
     ann.className = 'annulus';
     ann.style.position = 'absolute';
@@ -419,20 +407,18 @@ function drawAnnulus(node, scale){
     ann.style.border = `${thickness}px solid rgba(88, 196, 104, 0.95)`; // green
     node.appendChild(ann);
   } else {
-    // Shrink: draw a filled translucent mini-plate whose outer diameter equals scaled
-    // and also draw a thin rim that matches the scaled diameter (outer ring fixed small)
+    // filled mini-plate sized to scaled diameter; outer rim fixed to same small size
     const fill = document.createElement('div');
     fill.className = 'overlayFill';
     fill.style.width = scaled + 'px';
     fill.style.height = scaled + 'px';
-    fill.style.background = 'rgba(220, 70, 70, 0.22)'; // soft red translucent fill
+    fill.style.background = 'rgba(220, 70, 70, 0.22)'; // soft red
     fill.style.border = `1px solid rgba(220,70,70,0.28)`;
     fill.style.left = '50%';
     fill.style.top = '50%';
     fill.style.transform = 'translate(-50%,-50%)';
     node.appendChild(fill);
 
-    // small outer rim matching scaled diameter to give a clean edge
     const rim = document.createElement('div');
     rim.className = 'annulus';
     rim.style.position = 'absolute';
@@ -449,7 +435,7 @@ function drawAnnulus(node, scale){
   }
 }
 
-/* compute scale with bounds */
+/* compute scale and clamp */
 function computeScaleFromCalories(targetMap){
   const actual = Math.max(1, totalCaloriesPayload());
   const target = Math.max(0, totalCaloriesFromMap(targetMap || {}));
@@ -457,18 +443,17 @@ function computeScaleFromCalories(targetMap){
   return Math.max(0.12, Math.min(3.0, Math.sqrt(target / actual)));
 }
 
-/* Side column placement helper */
+/* side column placement */
 function placeSideColumn(sideContainer, toRight){
   if (!sideContainer) return;
   sideContainer.classList.remove('left');
   if (!toRight) sideContainer.classList.add('left');
 }
 
-/*
-  runCompare behaviour changes:
-  - For growth (scale >=1): ghost items will be greyed (original), scaled items colored.
-  - For shrink (scale <1): original items remain visible (colored) behind translucent mini-plate; scaled items are colored and scaled down.
-  - The plate-area element is scaled so visual edges align; rim/drawAnnulus uses scaled diameter so outer ring doesn't look big.
+/* runCompare: always show ghost (grey original) beneath colored scaled recommendation items.
+   - plate-area is scaled so inner edge aligns
+   - for shrink: mini-plate fill drawn then colored scaled items placed on top
+   - for growth: green annulus drawn and colored scaled items placed on top
 */
 function runCompare(targetOverlay, targetBase, annNode, sideContainer, captionEl, targetMap, title){
   if (!payload) { alert('No saved plate'); return; }
@@ -477,43 +462,37 @@ function runCompare(targetOverlay, targetBase, annNode, sideContainer, captionEl
   annNode.innerHTML = '';
   sideContainer.innerHTML = '';
 
-  // render static colored side items
+  // render static side items (colored)
   renderSideOnly(sideContainer, targetBase);
 
   buildOverlay(targetOverlay);
 
   const scale = computeScaleFromCalories(targetMap);
 
-  // hide base on-plate items (we show ghost + scaled overlay as controlled visuals)
+  // hide original base on-plate items (we have the ghost layer)
   Array.from(targetBase.querySelectorAll('.itemWrapper')).forEach(el => {
     if (el.dataset.onplate === '1') el.classList.add('hidden-onplate');
   });
 
-  // scale the plate-area so the plate visual changes size
+  // scale plate-area so plate visual resizes
   const plateArea = targetBase.querySelector('.plate-area');
   if (plateArea) {
     plateArea.style.transition = 'transform 700ms cubic-bezier(.2,.9,.2,1)';
     requestAnimationFrame(()=> plateArea.style.transform = `translate(-50%,-50%) scale(${scale})`);
   }
 
-  // draw annulus/fill aligned to scaled diameter
+  // draw annulus / filled mini-plate
   drawAnnulus(annNode, scale);
 
-  // style ghost vs scaled depending on growth/shrink
-  const ghostImgs = targetOverlay._ghost ? targetOverlay._ghost.querySelectorAll('img') : [];
-  const scaledImgs = targetOverlay._scaled ? targetOverlay._scaled.querySelectorAll('img') : [];
+  // Ensure ghost images are always visible beneath scaled items
+  const ghostImgs = targetOverlay._ghost ? Array.from(targetOverlay._ghost.querySelectorAll('img')) : [];
+  const scaledImgs = targetOverlay._scaled ? Array.from(targetOverlay._scaled.querySelectorAll('img')) : [];
 
-  if (scale >= 1) {
-    // Recommendation is larger: show original as grey ghost, scaled (new) as colored (and scaled up)
-    ghostImgs.forEach(i => { i.style.filter = 'grayscale(100%) contrast(80%)'; i.style.opacity = '0.45'; });
-    scaledImgs.forEach(i => { i.style.filter = ''; i.style.opacity = '1.0'; });
-  } else {
-    // Recommendation smaller: keep original colored ghost visible behind; scaled items colored too
-    ghostImgs.forEach(i => { i.style.filter = ''; i.style.opacity = '0.9'; });
-    scaledImgs.forEach(i => { i.style.filter = ''; i.style.opacity = '1.0'; });
-  }
+  // normalize styling: ghosts grey, scaled colored
+  ghostImgs.forEach(i => { i.className = 'ghost-img'; });
+  scaledImgs.forEach(i => { i.className = 'scaled-img'; });
 
-  // scale each recommendation item (scaledGroup) individually around its center
+  // scale each recommendation item around its center
   const scaledGroup = targetOverlay._scaled;
   if (scaledGroup) {
     Array.from(scaledGroup.querySelectorAll('.itemWrapper')).forEach(sw => {
@@ -523,12 +502,12 @@ function runCompare(targetOverlay, targetBase, annNode, sideContainer, captionEl
     });
   }
 
-  // side column placement: toRight when target >= actual
+  // side column placement
   const actualCal = Math.round(totalCaloriesPayload());
   const targetCal = Math.round(totalCaloriesFromMap(targetMap || {}));
   placeSideColumn(sideContainer, targetCal >= actualCal);
 
-  // friendly caption wording
+  // friendly caption
   setTimeout(()=> {
     let diffPct = 0;
     if (actualCal > 0) diffPct = Math.round(((targetCal - actualCal) / actualCal) * 100);
@@ -559,7 +538,7 @@ function renderSideOnly(sideContainer, targetBase){
   });
 }
 
-/* Clear comparison: remove overlay, reset plate scale, restore originals and caption */
+/* clear comparison: remove overlay & annulus, reset plate scale, restore base */
 function clearCompare(targetOverlay, targetBase, annNode, sideContainer, captionEl){
   targetOverlay.innerHTML = '';
   annNode.innerHTML = '';
