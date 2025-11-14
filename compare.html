@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8"/>
-<title>Compare Plate — fixed shrink/expand + local OWID</title>
+<title>Compare Plate — shrink/grow + water + correct halves</title>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <style>
   :root { --plate-wrapper-size:520px; --plate-diameter:480px; }
@@ -57,7 +57,8 @@
   .ghost-img{filter:grayscale(100%) contrast(78%); opacity:0.52}
   .ghost-inner-img{filter:grayscale(100%) contrast(78%); opacity:0.95}
   .scaled-img{filter:none; opacity:1}
-  .clip-half { -webkit-clip-path: polygon(0 0, 100% 100%, 0 100%); clip-path: polygon(0 0, 100% 100%, 0 100%); }
+  .clip-half { -webkit-clip-path: inset(0 50% 0 0); clip-path: inset(0 50% 0 0); } /* left half visible */
+  .clip-half-right { -webkit-clip-path: inset(0 0 0 50%); clip-path: inset(0 0 0 50%); } /* right half visible */
   .caption{font-size:13px;color:#333;margin-top:8px;max-width:420px}
   .annulus{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);border-radius:50%;pointer-events:none;opacity:0.95;box-sizing:border-box}
   .hidden-onplate { opacity:0; transform:scale(0.98); transition:opacity 220ms ease, transform 220ms ease; pointer-events:none; }
@@ -133,7 +134,7 @@
   </div>
 
 <script>
-/* CONFIG - edit image paths if your images are elsewhere */
+/* CONFIG */
 const SESSION_KEY = 'plate_positions_fallback';
 const LOCAL_CSV = 'daily-per-capita-caloric-supply.csv';
 const LOCAL_META = 'daily-per-capita-caloric-supply.metadata.json';
@@ -146,10 +147,11 @@ const CATALOG_IMG = {
   bread:'images/slice-of-bread.svg',
   apple:'images/apple.svg',
   milk:'images/milk-carton.svg',
-  cheese:'images/cheese.svg'
+  cheese:'images/cheese.svg',
+  water:'images/glass-of-water.svg'
 };
 
-const DEFAULT_GRAMS = { potato:150, sausage:75, carrot:75, bread:40, apple:150, milk:250 };
+const DEFAULT_GRAMS = { potato:150, sausage:75, carrot:75, bread:40, apple:150, milk:250, water:200 };
 const COUNTRY_LIST = ["Finland","Sweden","Norway","Denmark","United States","Canada","Brazil","Argentina","Chile","China","India","Japan","Indonesia","Australia","New Zealand","Nigeria","Ethiopia","Kenya","South Africa","Egypt","Morocco"];
 
 let payload = null;
@@ -172,45 +174,29 @@ const overReal = document.getElementById('overlayReality');
 const sideReal = document.getElementById('sideReal');
 const capReal  = document.getElementById('captionReality');
 
-/* ---------- Utilities ---------- */
-
+/* Utilities */
 function escapeAttr(s){ return String(s||'').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
-function resolveImageId(id){
-  if (!id) return 'images/unknown.svg';
-  if (CATALOG_IMG[id]) return CATALOG_IMG[id];
-  return 'images/' + id + '.svg';
-}
+function resolveImageId(id){ if (!id) return 'images/unknown.svg'; if (CATALOG_IMG[id]) return CATALOG_IMG[id]; return 'images/' + id + '.svg'; }
 
-/* Robust CSV parser (handles quoted fields, CRLF) */
+/* CSV parser */
 function parseCsv(text){
-  const rows = []; let cur = []; let curVal = ''; let inQuotes = false;
+  const rows=[]; let cur=[]; let curVal=''; let inQuotes=false;
   for (let i=0;i<text.length;i++){
-    const ch = text[i], nxt = text[i+1];
-    if (ch === '"') {
-      if (inQuotes && nxt === '"') { curVal += '"'; i++; continue; }
-      inQuotes = !inQuotes; continue;
-    }
-    if (!inQuotes && (ch === '\n' || ch === '\r')) {
-      if (ch === '\r' && text[i+1] === '\n') i++;
-      cur.push(curVal); rows.push(cur); cur = []; curVal = ''; continue;
-    }
-    if (!inQuotes && ch === ',') { cur.push(curVal); curVal = ''; continue; }
-    curVal += ch;
+    const ch=text[i], nxt=text[i+1];
+    if (ch==='"'){ if (inQuotes && nxt==='"'){ curVal+='"'; i++; continue; } inQuotes=!inQuotes; continue; }
+    if (!inQuotes && (ch==='\n'||ch==='\r')){ if (ch==='\r' && text[i+1]==='\n') i++; cur.push(curVal); rows.push(cur); cur=[]; curVal=''; continue; }
+    if (!inQuotes && ch===','){ cur.push(curVal); curVal=''; continue; }
+    curVal+=ch;
   }
-  if (curVal !== '' || cur.length) cur.push(curVal);
+  if (curVal!==''||cur.length) cur.push(curVal);
   if (cur.length) rows.push(cur);
   if (!rows.length) return { header:[], rows:[] };
-  const header = rows[0].map(h => h.trim());
-  const data = rows.slice(1).map(r => {
-    const obj = {};
-    for (let j=0;j<header.length;j++) obj[header[j]] = r[j] !== undefined ? r[j] : '';
-    return obj;
-  });
+  const header = rows[0].map(h=>h.trim());
+  const data = rows.slice(1).map(r=>{ const obj={}; for (let j=0;j<header.length;j++) obj[header[j]] = r[j]!==undefined? r[j] : ''; return obj; });
   return { header, rows: data };
 }
 
-/* ---------- Load OWID local files (CSV + metadata) with fallbacks ---------- */
-
+/* Load local OWID CSV + metadata, fallback to built-in dataset */
 async function loadLocalOwid(){
   latestKcalByCountry = {};
   try {
@@ -219,67 +205,46 @@ async function loadLocalOwid(){
     const meta = await metaRes.json();
     const csvText = await csvRes.text();
     const parsed = parseCsv(csvText);
-
     const countryCol = parsed.header.find(h => /country|entity|name/i.test(h)) || parsed.header[0];
     const yearCol = parsed.header.find(h => /year/i.test(h)) || parsed.header[1];
 
-    // determine value column using metadata or heuristics
     let valueCol = null;
     if (meta && meta.variables && Array.isArray(meta.variables)) {
       const candidate = meta.variables.find(v => v.dataColumn || v.column || v.name);
       if (candidate) valueCol = candidate.dataColumn || candidate.column || candidate.name;
     }
     if (!valueCol) {
-      const lc = parsed.header.map(h => h.toLowerCase());
+      const lc = parsed.header.map(h=>h.toLowerCase());
       const candidates = ['daily supply of calories per person','daily-per-capita-caloric-supply','value','daily supply','calories'];
-      for (const c of candidates) {
-        const idx = lc.findIndex(h => h.includes(c));
-        if (idx !== -1) { valueCol = parsed.header[idx]; break; }
-      }
+      for (const c of candidates) { const idx = lc.findIndex(h=>h.includes(c)); if (idx!==-1){ valueCol = parsed.header[idx]; break; } }
     }
-    // fallback detect numeric column
     if (!valueCol && parsed.rows.length) {
       const sample = parsed.rows[0];
-      for (const k of Object.keys(sample)) {
-        if (k === countryCol || k === yearCol) continue;
-        const v = sample[k];
-        if (v !== '' && !isNaN(Number(v))) { valueCol = k; break; }
-      }
+      for (const k of Object.keys(sample)){ if (k===countryCol||k===yearCol) continue; const v = sample[k]; if (v!=='' && !isNaN(Number(v))){ valueCol = k; break; } }
     }
 
     const byCountry = {};
-    parsed.rows.forEach(r => {
-      const country = (r[countryCol] || '').trim();
-      const year = Number(r[yearCol]);
-      const v = valueCol ? (r[valueCol] === '' ? NaN : Number(r[valueCol])) : NaN;
+    parsed.rows.forEach(r=>{
+      const country = (r[countryCol]||'').trim(); const year = Number(r[yearCol]);
+      const v = valueCol ? (r[valueCol]===''? NaN : Number(r[valueCol])) : NaN;
       if (!country || !year || isNaN(v)) return;
       if (!byCountry[country]) byCountry[country] = {};
       byCountry[country][year] = v;
     });
 
-    COUNTRY_LIST.forEach(c => {
+    COUNTRY_LIST.forEach(c=>{
       const data = byCountry[c];
       if (!data) { latestKcalByCountry[c] = null; return; }
-      const yrs = Object.keys(data).map(Number).filter(y => !isNaN(y));
+      const yrs = Object.keys(data).map(Number).filter(y=>!isNaN(y));
       if (!yrs.length) { latestKcalByCountry[c] = null; return; }
       const latest = Math.max(...yrs);
       latestKcalByCountry[c] = { year: latest, kcal: data[latest] };
     });
-
     return true;
   } catch (e) {
-    console.warn('loadLocalOwid failed, falling back to built-in dataset', e);
-    // built-in fallback (approximate values) so UI works offline
-    const fallback = {
-      "Finland":3360,"Sweden":3300,"Norway":3350,"Denmark":3250,
-      "United States":3800,"Canada":3650,"Brazil":2850,"Argentina":2950,"Chile":3000,
-      "China":3000,"India":2400,"Japan":2700,"Indonesia":2600,"Australia":3400,"New Zealand":3500,
-      "Nigeria":2000,"Ethiopia":2000,"Kenya":2100,"South Africa":2600,"Egypt":2500,"Morocco":2400
-    };
-    COUNTRY_LIST.forEach(c => {
-      if (fallback[c]) latestKcalByCountry[c] = { year: 2022, kcal: fallback[c] };
-      else latestKcalByCountry[c] = null;
-    });
+    console.warn('loadLocalOwid failed, using fallback values', e);
+    const fallback = {"Finland":3360,"Sweden":3300,"Norway":3350,"Denmark":3250,"United States":3800,"Canada":3650,"Brazil":2850,"Argentina":2950,"Chile":3000,"China":3000,"India":2400,"Japan":2700,"Indonesia":2600,"Australia":3400,"New Zealand":3500,"Nigeria":2000,"Ethiopia":2000,"Kenya":2100,"South Africa":2600,"Egypt":2500,"Morocco":2400};
+    COUNTRY_LIST.forEach(c => { if (fallback[c]) latestKcalByCountry[c] = { year: 2022, kcal: fallback[c] }; else latestKcalByCountry[c] = null; });
     return false;
   }
 }
@@ -295,7 +260,7 @@ function populateCountrySelect(){
   });
 }
 
-/* ---------- Render base plate ---------- */
+/* ---------- Render base plate (items visible on plate) ---------- */
 
 function computeSideSlots(canvasEl){
   const rect = canvasEl.getBoundingClientRect();
@@ -303,12 +268,21 @@ function computeSideSlots(canvasEl){
   const plateRight = (rect.width/2) + (plateDiameter/2);
   const gap = Math.max(8, Math.round(Math.min(rect.width, rect.height) * 0.02));
   const columnX = Math.min(rect.width - 30, Math.round(plateRight + gap));
-  const startY = 40;
-  const spacing = 18 + 86;
-  const slots = [];
-  const max = Math.max(4, Math.floor((rect.height - startY - 20) / spacing));
+  const startY = 40; const spacing = 18 + 86;
+  const slots=[]; const max = Math.max(4, Math.floor((rect.height - startY - 20)/spacing));
   for (let i=0;i<max;i++) slots.push({ x: columnX, y: startY + i * spacing });
   return slots;
+}
+
+function applyHalfClass(imgEl, fraction, rotationDeg){
+  // fraction near 0.5 -> half. Determine which side of image to clip by rotation for visual consistency.
+  imgEl.classList.remove('clip-half','clip-half-right');
+  if (Math.abs(fraction - 0.5) < 0.01) {
+    // if rotation roughly points left or right flip the half clip
+    const rad = (rotationDeg || 0) * Math.PI/180;
+    const dx = Math.cos(rad);
+    if (dx < 0) imgEl.classList.add('clip-half-right'); else imgEl.classList.add('clip-half');
+  }
 }
 
 function renderBase(targetBase, sideContainer){
@@ -316,8 +290,8 @@ function renderBase(targetBase, sideContainer){
   const wrap = document.createElement('div'); wrap.className = 'plateWrap';
   const inner = document.createElement('div'); inner.className = 'plateInner';
   wrap.appendChild(inner); targetBase.appendChild(wrap);
-
   const slots = computeSideSlots(targetBase.parentElement);
+
   (payload.positions || []).forEach(p => {
     if (p.placement === 'side') {
       const idx = (typeof p.sideSlot === 'number') ? p.sideSlot : 0;
@@ -329,29 +303,21 @@ function renderBase(targetBase, sideContainer){
       sideContainer.appendChild(si);
       return;
     }
-
     const w = document.createElement('div'); w.className = 'itemWrapper'; w.dataset.onplate = '1';
-    w.style.position = 'absolute';
-    w.style.left = (p.x||0) + 'px';
-    w.style.top = (p.y||0) + 'px';
-    w.style.width = (p.sizePx||48) + 'px';
-    w.style.height = (p.sizePx||48) + 'px';
+    w.style.position = 'absolute'; w.style.left = (p.x||0) + 'px'; w.style.top = (p.y||0) + 'px';
+    w.style.width = (p.sizePx||48) + 'px'; w.style.height = (p.sizePx||48) + 'px';
     w.style.transform = `translate(-50%,-50%) rotate(${p.rotationDeg||0}deg)`;
-    const img = document.createElement('img');
-    img.src = p._imgOverride || resolveImageId(p.id);
-    img.alt = p.label || p.id || '';
-    const frac = (typeof p.fraction === 'number') ? p.fraction : 1;
-    if (Math.abs(frac - 0.5) < 0.001) img.classList.add('clip-half');
-    else if (frac < 0.5) img.style.transform = `scale(${Math.max(0.25, Math.min(1, frac))})`;
-    w.appendChild(img);
-    inner.appendChild(w);
+    const img = document.createElement('img'); img.src = p._imgOverride || resolveImageId(p.id); img.alt = p.label || p.id || '';
+    const frac = (typeof p.fraction === 'number') ? p.fraction : (p.gramsPerPortion ? p.grams / p.gramsPerPortion : 1);
+    applyHalfClass(img, frac, p.rotationDeg || 0);
+    if (frac < 0.5 - 0.001) img.style.transform = `scale(${Math.max(0.25, Math.min(1, frac))})`;
+    w.appendChild(img); inner.appendChild(w);
   });
 }
 
-/* ---------- Build overlay groups (one-time per compare) ---------- */
+/* ---------- Overlay creation (one per panel) ---------- */
 
 function buildOverlay(targetOverlay){
-  // clear and prepare groups: ghost (full grey), scaled (colored), ghostInner (small grey)
   targetOverlay.innerHTML = '';
   const wrap = document.createElement('div'); wrap.className = 'plateWrap';
   const ghost = document.createElement('div'); ghost.className = 'ghostGroup';
@@ -361,34 +327,46 @@ function buildOverlay(targetOverlay){
   (payload.positions || []).forEach(p => {
     if (p.placement !== 'onplate') return;
 
-    // ghost: full-size grey background element
+    // compute fraction for visual clipping/scaling
+    const fraction = (typeof p.fraction === 'number') ? p.fraction : (p.gramsPerPortion ? p.grams / p.gramsPerPortion : 1);
+    const sizePx = p.sizePx || 48;
+
+    // ghost (full-size grey)
     const gw = document.createElement('div'); gw.className = 'itemWrapper';
     gw.style.position = 'absolute'; gw.style.left = (p.x||0) + 'px'; gw.style.top = (p.y||0) + 'px';
-    gw.style.width = (p.sizePx||48) + 'px'; gw.style.height = (p.sizePx||48) + 'px';
+    gw.style.width = sizePx + 'px'; gw.style.height = sizePx + 'px';
     gw.style.transform = `translate(-50%,-50%) rotate(${p.rotationDeg||0}deg)`;
     const gimg = document.createElement('img'); gimg.src = p._imgOverride || resolveImageId(p.id); gimg.alt = p.label||p.id||'';
-    gimg.className = 'ghost-img'; gw.appendChild(gimg); ghost.appendChild(gw);
+    gimg.className = 'ghost-img';
+    applyHalfClass(gimg, fraction, p.rotationDeg || 0);
+    if (fraction < 0.5 - 0.001) gimg.style.transform = `scale(${Math.max(0.25, Math.min(1, fraction))})`;
+    gw.appendChild(gimg); ghost.appendChild(gw);
 
-    // scaled: colored item (animated by runCompare)
+    // scaled (colored) - will be scaled by runCompare
     const sw = document.createElement('div'); sw.className = 'itemWrapper';
     sw.style.position = 'absolute'; sw.style.left = (p.x||0) + 'px'; sw.style.top = (p.y||0) + 'px';
-    sw.style.width = (p.sizePx||48) + 'px'; sw.style.height = (p.sizePx||48) + 'px';
+    sw.style.width = sizePx + 'px'; sw.style.height = sizePx + 'px';
     sw.dataset.rotate = (p.rotationDeg||0);
     sw.style.transform = `translate(-50%,-50%) rotate(${p.rotationDeg||0}deg) scale(1)`;
     const simg = document.createElement('img'); simg.src = p._imgOverride || resolveImageId(p.id); simg.alt = p.label||p.id||'';
-    simg.className = 'scaled-img'; sw.appendChild(simg); scaled.appendChild(sw);
+    simg.className = 'scaled-img';
+    applyHalfClass(simg, fraction, p.rotationDeg || 0);
+    if (fraction < 0.5 - 0.001) simg.style.transform = `scale(${Math.max(0.25, Math.min(1, fraction))})`;
+    sw.appendChild(simg); scaled.appendChild(sw);
 
-    // ghostInner: smaller grey image used for growth case (appears on top)
+    // ghostInner (small grey inside for growth)
     const giw = document.createElement('div'); giw.className = 'itemWrapper';
     giw.style.position = 'absolute'; giw.style.left = (p.x||0) + 'px'; giw.style.top = (p.y||0) + 'px';
-    giw.style.width = (p.sizePx||48) + 'px'; giw.style.height = (p.sizePx||48) + 'px';
+    giw.style.width = sizePx + 'px'; giw.style.height = sizePx + 'px';
     const innerScale = 0.72;
     giw.style.transform = `translate(-50%,-50%) rotate(${p.rotationDeg||0}deg) scale(${innerScale})`;
     const giimg = document.createElement('img'); giimg.src = p._imgOverride || resolveImageId(p.id); giimg.alt = p.label||p.id||'';
-    giimg.className = 'ghost-inner-img'; giw.appendChild(giimg); ghostInner.appendChild(giw);
+    giimg.className = 'ghost-inner-img';
+    applyHalfClass(giimg, fraction, p.rotationDeg || 0);
+    if (fraction < 0.5 - 0.001) giimg.style.transform = `scale(${innerScale * Math.max(0.25, Math.min(1, fraction))})`;
+    giw.appendChild(giimg); ghostInner.appendChild(giw);
   });
 
-  // order: ghost (back), scaled (middle), ghostInner (top)
   wrap.appendChild(ghost); wrap.appendChild(scaled); wrap.appendChild(ghostInner);
   targetOverlay.appendChild(wrap);
 
@@ -398,7 +376,7 @@ function buildOverlay(targetOverlay){
   targetOverlay._ghostInner = ghostInner;
 }
 
-/* ---------- Annulus / mini-plate drawing ---------- */
+/* ---------- Annulus ---------- */
 
 function drawAnnulus(node, scale){
   node.innerHTML = '';
@@ -427,9 +405,9 @@ function drawAnnulus(node, scale){
   }
 }
 
-/* ---------- Calories and mapping ---------- */
+/* ---------- Calories mapping ---------- */
 
-const CAL_PER_G = { potato:0.77, sausage:2.5, carrot:0.41, bread_variant:2.5, bread:2.5, apple:0.52, milk:0.64 };
+const CAL_PER_G = { potato:0.77, sausage:2.5, carrot:0.41, bread_variant:2.5, bread:2.5, apple:0.52, milk:0.64, water:0.0 };
 const avgKcalPerGram = 1.5;
 
 function kcalToGrams(kcal){ return Math.max(0, Math.round(kcal / avgKcalPerGram)); }
@@ -439,58 +417,29 @@ function buildTargetGramsMap(totalGrams){
   const weights = [1.3,1,1.1,0.9,0.9,1.0];
   const totalW = weights.reduce((s,w)=>s+w,0);
   const map = {}; let remaining = totalGrams;
-  idsPreferred.forEach((id,i)=>{
-    const g = Math.round((weights[i]/totalW) * totalGrams);
-    map[id] = g; remaining -= g;
-  });
-  let i = 0;
-  while (remaining > 0) {
-    const key = idsPreferred[i % idsPreferred.length];
-    map[key] = (map[key] || 0) + 1;
-    remaining--;
-    i++;
-  }
+  idsPreferred.forEach((id,i)=>{ const g = Math.round((weights[i]/totalW)*totalGrams); map[id]=g; remaining-=g; });
+  let i=0; while (remaining>0){ const key = idsPreferred[i%idsPreferred.length]; map[key]=(map[key]||0)+1; remaining--; i++; }
   return map;
 }
 
-function totalCaloriesFromMap(map){
-  let sum = 0;
-  Object.keys(map || {}).forEach(id => {
-    const grams = map[id] || 0;
-    const calPerG = CAL_PER_G[id] !== undefined ? CAL_PER_G[id] : 0.8;
-    sum += grams * calPerG;
-  });
-  return sum;
-}
+function totalCaloriesFromMap(map){ let sum=0; Object.keys(map||{}).forEach(id=>{ const grams = map[id]||0; const calPerG = CAL_PER_G[id]!==undefined?CAL_PER_G[id]:0.8; sum+=grams*calPerG; }); return sum; }
 
 function totalCaloriesPayloadFromPositions(positions){
-  return (positions || []).reduce((s,p) => {
-    if (typeof p.kcalPerPortion === 'number' && typeof p.gramsPerPortion === 'number' && p.gramsPerPortion > 0) {
-      const calPerG = p.kcalPerPortion / p.gramsPerPortion;
-      return s + (p.grams || 0) * calPerG;
-    }
-    const calPerG = CAL_PER_G[p.id] !== undefined ? CAL_PER_G[p.id] : 0.8;
-    return s + (p.grams || 0) * calPerG;
-  }, 0);
+  return (positions||[]).reduce((s,p)=>{ if (typeof p.kcalPerPortion==='number' && typeof p.gramsPerPortion==='number' && p.gramsPerPortion>0){ const calPerG = p.kcalPerPortion/p.gramsPerPortion; return s + (p.grams||0)*calPerG; } const calPerG = CAL_PER_G[p.id]!==undefined?CAL_PER_G[p.id]:0.8; return s + (p.grams||0)*calPerG; }, 0);
 }
-function totalCaloriesPayload(){
-  if (payload && typeof payload.totalCalories === 'number') return Math.max(0, Math.round(payload.totalCalories));
-  return Math.max(0, Math.round(totalCaloriesPayloadFromPositions(payload.positions || [])));
-}
+function totalCaloriesPayload(){ if (payload && typeof payload.totalCalories === 'number') return Math.max(0, Math.round(payload.totalCalories)); return Math.max(0, Math.round(totalCaloriesPayloadFromPositions(payload.positions||[]))); }
 
 function computeScaleFromCalories(targetMap){
   const actual = Math.max(1, totalCaloriesPayload());
-  const target = Math.max(0, totalCaloriesFromMap(targetMap || {}));
+  const target = Math.max(0, totalCaloriesFromMap(targetMap||{}));
   if (target <= 0) return 0.001;
   return Math.max(0.12, Math.min(3.0, Math.sqrt(target / actual)));
 }
 
-/* ---------- Compare logic (shrink/grow rules) ---------- */
+/* ---------- Compare logic ---------- */
 
 function placeSideColumn(sideContainer, toRight){
-  if (!sideContainer) return;
-  sideContainer.classList.remove('left');
-  if (!toRight) sideContainer.classList.add('left');
+  if (!sideContainer) return; sideContainer.classList.remove('left'); if (!toRight) sideContainer.classList.add('left');
 }
 
 function renderSideOnly(sideContainer, targetBase){
@@ -510,46 +459,26 @@ function renderSideOnly(sideContainer, targetBase){
 
 function runCompare(targetOverlay, targetBase, annNode, sideContainer, captionEl, targetMap){
   if (!payload) { alert('No saved plate found in sessionStorage under key: ' + SESSION_KEY); return; }
-
-  targetOverlay.innerHTML = '';
-  annNode.innerHTML = '';
-  sideContainer.innerHTML = '';
-
-  // build overlay groups once
-  buildOverlay(targetOverlay);
-  renderSideOnly(sideContainer, targetBase);
+  targetOverlay.innerHTML = ''; annNode.innerHTML = ''; sideContainer.innerHTML = '';
+  buildOverlay(targetOverlay); renderSideOnly(sideContainer, targetBase);
 
   const scale = computeScaleFromCalories(targetMap);
-
-  // scale plate wrapper inside base so annulus and overlay align
   const wrap = targetBase.querySelector('.plateWrap');
-  if (wrap) {
-    wrap.style.transition = 'transform 700ms cubic-bezier(.2,.9,.2,1)';
-    requestAnimationFrame(()=> wrap.style.transform = `translate(-50%,-50%) scale(${scale})`);
-  }
-
+  if (wrap){ wrap.style.transition = 'transform 700ms cubic-bezier(.2,.9,.2,1)'; requestAnimationFrame(()=> wrap.style.transform = `translate(-50%,-50%) scale(${scale})`); }
   drawAnnulus(annNode, scale);
 
-  // hide on-plate colored base items (we'll show overlay groups)
-  Array.from(targetBase.querySelectorAll('.itemWrapper')).forEach(el => {
-    if (el.dataset.onplate === '1') el.classList.add('hidden-onplate');
-  });
+  // hide base on-plate items
+  Array.from(targetBase.querySelectorAll('.itemWrapper')).forEach(el => { if (el.dataset.onplate === '1') el.classList.add('hidden-onplate'); });
 
-  // decide display rules
   const ghostGroup = targetOverlay._ghost;
   const scaledGroup = targetOverlay._scaled;
   const ghostInnerGroup = targetOverlay._ghostInner;
-
-  // ensure groups exist
   if (!ghostGroup || !scaledGroup || !ghostInnerGroup) return;
 
-  // reset
-  ghostGroup.style.display = '';
-  scaledGroup.style.display = '';
-  ghostInnerGroup.style.display = '';
+  ghostGroup.style.display = ''; scaledGroup.style.display = ''; ghostInnerGroup.style.display = '';
 
   if (scale < 1) {
-    // SHRINK: big grey ghost visible as background; scaled colored items on top scaled DOWN; ghostInner hidden.
+    // SHRINK: show full-size ghost behind, show scaled items smaller above, hide ghostInner
     ghostInnerGroup.style.display = 'none';
     ghostGroup.style.opacity = '0.65';
     Array.from(scaledGroup.querySelectorAll('.itemWrapper')).forEach(sw => {
@@ -558,7 +487,7 @@ function runCompare(targetOverlay, targetBase, annNode, sideContainer, captionEl
       requestAnimationFrame(()=> sw.style.transform = `translate(-50%,-50%) rotate(${rotate}deg) scale(${scale})`);
     });
   } else {
-    // GROW: colored scaled items are big (scale >= 1), ghostInner (small grey inside) visible on top, ghost subdued beneath.
+    // GROW: show scaled items larger, ghostInner visible (small grey inside), ghost subdued
     ghostGroup.style.opacity = '0.35';
     ghostInnerGroup.style.display = '';
     Array.from(scaledGroup.querySelectorAll('.itemWrapper')).forEach(sw => {
@@ -566,16 +495,11 @@ function runCompare(targetOverlay, targetBase, annNode, sideContainer, captionEl
       sw.style.transition = 'transform 700ms cubic-bezier(.2,.9,.2,1)';
       requestAnimationFrame(()=> sw.style.transform = `translate(-50%,-50%) rotate(${rotate}deg) scale(${scale})`);
     });
-    // keep ghostInner at predefined smaller scale so grey appears inside
-    Array.from(ghostInnerGroup.querySelectorAll('.itemWrapper')).forEach(giw => {
-      giw.style.transition = 'opacity 300ms ease';
-      giw.style.opacity = '1';
-    });
+    Array.from(ghostInnerGroup.querySelectorAll('.itemWrapper')).forEach(giw => { giw.style.transition = 'opacity 300ms ease'; giw.style.opacity = '1'; });
   }
 
-  // side column placement and caption text
   const actualCal = Math.round(totalCaloriesPayload());
-  const targetCal = Math.round(totalCaloriesFromMap(targetMap || {}));
+  const targetCal = Math.round(totalCaloriesFromMap(targetMap||{}));
   placeSideColumn(sideContainer, targetCal >= actualCal);
 
   setTimeout(()=> {
@@ -588,16 +512,22 @@ function runCompare(targetOverlay, targetBase, annNode, sideContainer, captionEl
   }, 700);
 }
 
+/* ---------- Clear helper ---------- */
+
+function clearCompare(targetOverlay, targetBase, annNode, sideContainer, captionEl){
+  targetOverlay.innerHTML = ''; annNode.innerHTML = ''; sideContainer.innerHTML = '';
+  const wrap = targetBase.querySelector('.plateWrap');
+  if (wrap) { wrap.style.transition = 'transform 300ms ease'; wrap.style.transform = 'translate(-50%,-50%) scale(1)'; }
+  Array.from(targetBase.querySelectorAll('.itemWrapper')).forEach(el => { if (el.dataset.onplate === '1') el.classList.remove('hidden-onplate'); });
+  captionEl.textContent = 'Comparison cleared. Template remains colored.';
+}
+
 /* ---------- UI wiring ---------- */
 
 document.getElementById('backBtn').addEventListener('click', ()=> history.back());
-document.getElementById('resetAllBtn').addEventListener('click', ()=> {
-  clearCompare(overRec, baseRec, annRec, sideRec, capRec);
-  clearCompare(overReal, baseReal, annReal, sideReal, capReal);
-});
+document.getElementById('resetAllBtn').addEventListener('click', ()=> { clearCompare(overRec, baseRec, annRec, sideRec, capRec); clearCompare(overReal, baseReal, annReal, sideReal, capReal); });
 
 document.getElementById('cmpRecommendedBtn').addEventListener('click', ()=> {
-  // simple recommended target (grams)
   const recommendedMap = { carrot:150, apple:150, potato:150, bread_variant:40, sausage:75, milk:250 };
   runCompare(overRec, baseRec, annRec, sideRec, capRec, recommendedMap);
 });
@@ -608,36 +538,17 @@ document.getElementById('cmpRealityBtn').addEventListener('click', ()=> {
   const country = countrySelect.value;
   const info = latestKcalByCountry[country];
   if (!info || !info.kcal) { alert('No data for ' + country); return; }
-  const dailyKcal = info.kcal;
-  const lunchKcal = dailyKcal / 3;
-  const lunchGrams = kcalToGrams(lunchKcal);
+  const dailyKcal = info.kcal; const lunchKcal = dailyKcal / 3; const lunchGrams = kcalToGrams(lunchKcal);
   const gramsMap = buildTargetGramsMap(lunchGrams);
   runCompare(overReal, baseReal, annReal, sideReal, capReal, gramsMap);
 });
 
-/* ---------- Clear helpers ---------- */
-
-function clearCompare(targetOverlay, targetBase, annNode, sideContainer, captionEl){
-  targetOverlay.innerHTML = '';
-  annNode.innerHTML = '';
-  sideContainer.innerHTML = '';
-  const wrap = targetBase.querySelector('.plateWrap');
-  if (wrap) { wrap.style.transition = 'transform 300ms ease'; wrap.style.transform = 'translate(-50%,-50%) scale(1)'; }
-  Array.from(targetBase.querySelectorAll('.itemWrapper')).forEach(el => { if (el.dataset.onplate === '1') el.classList.remove('hidden-onplate'); });
-  captionEl.textContent = 'Comparison cleared. Template remains colored.';
-}
-
-/* ---------- Init: load saved plate + OWID data ---------- */
+/* ---------- Init ---------- */
 
 (async function init(){
-  // load saved plate payload from sessionStorage (same key your app uses)
-  try {
-    const raw = sessionStorage.getItem(SESSION_KEY);
-    if (raw) payload = JSON.parse(raw);
-  } catch (e) { payload = null; }
-
+  try { const raw = sessionStorage.getItem(SESSION_KEY); if (raw) payload = JSON.parse(raw); } catch(e){ payload = null; }
   if (payload) {
-    // normalization
+    // normalize fractions
     (payload.positions || []).forEach(item => {
       if (typeof item.gramsPerPortion !== 'number') item.gramsPerPortion = item.gramsPerPortion || (DEFAULT_GRAMS[item.id] || 100);
       if (!('grams' in item) || item.grams == null) item.grams = item.grams || 0;
