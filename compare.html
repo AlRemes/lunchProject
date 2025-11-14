@@ -59,6 +59,7 @@
   .itemWrapper{position:absolute; transform:translate(-50%,-50%); pointer-events:none}
   .itemWrapper img{display:block;width:100%;height:100%;object-fit:contain}
   .ghost-img{filter:grayscale(100%) contrast(80%); opacity:0.45}
+  .ghost-inner{filter:grayscale(100%) contrast(80%); opacity:0.18}
   .scaled-img{filter:none; opacity:1}
   .clip-half { -webkit-clip-path: polygon(0 0, 100% 100%, 0 100%); clip-path: polygon(0 0, 100% 100%, 0 100%); }
   .caption{font-size:13px;color:#333;margin-top:8px;max-width:360px}
@@ -102,7 +103,7 @@
           </div>
 
           <div>
-            <div class="caption" id="captionRecommended">Press Run Compare. Recommendation will be shown as a colored scaled plate or annulus; original items are shown as grey ghost beneath the colored recommendation so you can compare.</div>
+            <div class="caption" id="captionRecommended">Press Run Compare. Recommendation will be shown as a colored scaled plate or annulus; original items are shown as grey ghost beneath/inside the colored recommendation so you can compare.</div>
           </div>
         </div>
       </div>
@@ -134,12 +135,10 @@
   </div>
 
 <script>
-/* Behavior changes implemented:
- - Always show original items as grey "ghost" layer.
- - Always show recommendation as colored scaled layer (scaledGroup) placed on top.
- - When recommendation is smaller (red), the recommendation is shown as a semi-transparent filled mini-plate (colored) plus colored scaled items on top; ghost remains visible beneath.
- - When recommendation is larger (green), the recommendation is shown as colored scaled items and an outer annulus; original ghost remains visible beneath to allow direct comparison.
- - Side items remain colored and are not scaled.
+/* Update: when recommendation is larger (green case) the original items show as a grey ghost AND
+   the inner area of each original item is shown faint grey (ghost-inner) so you clearly see
+   "grey inside, colored outside" before/after difference. For the shrink (red) case the translucent
+   mini-plate plus colored scaled items are shown and ghost remains beneath.
 */
 
 const SESSION_KEY = 'plate_positions_fallback';
@@ -200,7 +199,7 @@ function computeSideSlots(canvasEl){
   return slots;
 }
 
-/* Normalize payload while preserving provided metadata */
+/* Normalize payload preserving overrides/metadata */
 function normalizePayload(p){
   (p.positions || []).forEach(item => {
     if (typeof item.gramsPerPortion !== 'number') item.gramsPerPortion = item.gramsPerPortion || (DEFAULT_GRAMS[item.id] || 100);
@@ -221,7 +220,6 @@ function normalizePayload(p){
       item.kcalPerPortion = Math.round((item.gramsPerPortion || DEFAULT_GRAMS[item.id] || 100) * calpg);
     }
   });
-
   if (!('totalCalories' in p) || typeof p.totalCalories !== 'number') {
     p.totalCalories = totalCaloriesPayloadFromPositions(p.positions || []);
   } else {
@@ -277,7 +275,7 @@ function renderBase(targetBase, sideContainer){
   });
 }
 
-/* Resolve image path and prefer explicit variants or _imgOverride */
+/* Resolve image path and prefer _imgOverride */
 function resolveImage(p){
   if (p._imgOverride) return p._imgOverride;
   if (p.id === 'bread_variant') return CATALOG_IMG.bread_variant;
@@ -287,7 +285,8 @@ function resolveImage(p){
   return 'images/' + (p.id || 'unknown') + '.svg';
 }
 
-/* Build overlay with ghostGroup (grey originals) and scaledGroup (colored recommendation) */
+/* Build overlay with ghostGroup (grey originals) and scaledGroup (colored recommendation).
+   Also create ghost-inner duplicates ready for green-case inner-grey overlay. */
 function buildOverlay(targetOverlay){
   targetOverlay.innerHTML = '';
   const container = document.createElement('div');
@@ -296,6 +295,7 @@ function buildOverlay(targetOverlay){
   container.style.width='100%'; container.style.height='100%';
 
   const ghost = document.createElement('div'); ghost.className = 'ghostGroup';
+  const ghostInnerLayer = document.createElement('div'); ghostInnerLayer.className = 'ghostGroup ghost-inner-group';
   const scaled = document.createElement('div'); scaled.className = 'scaledGroup';
 
   const svgNS = 'http://www.w3.org/2000/svg';
@@ -332,6 +332,25 @@ function buildOverlay(targetOverlay){
     gw.appendChild(gimg);
     ghost.appendChild(gw);
 
+    // ghost-inner: slightly smaller faint grey to appear "inside" the grey shape (for green case)
+    const giw = document.createElement('div');
+    giw.className = 'itemWrapper';
+    giw.style.position = 'absolute';
+    giw.style.left = (p.x||0) + 'px';
+    giw.style.top  = (p.y||0) + 'px';
+    // make inner slightly smaller (scale applied via transform)
+    giw.style.width = (p.sizePx||48) + 'px';
+    giw.style.height = (p.sizePx||48) + 'px';
+    giw.style.transform = `translate(-50%,-50%) rotate(${p.rotationDeg||0}deg) scale(0.86)`;
+    const giimg = document.createElement('img');
+    giimg.src = p._imgOverride || resolveImage(p);
+    giimg.alt = p.label || p.id || '';
+    giimg.className = 'ghost-inner';
+    if (Math.abs(gfrac - 0.5) < 0.001) giimg.classList.add('clip-half');
+    else if (gfrac < 0.5) giimg.style.transform = `scale(${Math.max(0.25, Math.min(1, gfrac))})`;
+    giw.appendChild(giimg);
+    ghostInnerLayer.appendChild(giw);
+
     // scaled (recommendation) — colored layer on top
     const sw = document.createElement('div');
     sw.className = 'itemWrapper';
@@ -353,10 +372,13 @@ function buildOverlay(targetOverlay){
     scaled.appendChild(sw);
   });
 
+  // order: ghost (full grey), ghost-inner (faint inner grey), scaled (colored on top)
   container.appendChild(ghost);
+  container.appendChild(ghostInnerLayer);
   container.appendChild(scaled);
   targetOverlay.appendChild(container);
   targetOverlay._ghost = ghost;
+  targetOverlay._ghostInner = ghostInnerLayer;
   targetOverlay._scaled = scaled;
 }
 
@@ -407,12 +429,11 @@ function drawAnnulus(node, scale){
     ann.style.border = `${thickness}px solid rgba(88, 196, 104, 0.95)`; // green
     node.appendChild(ann);
   } else {
-    // filled mini-plate sized to scaled diameter; outer rim fixed to same small size
     const fill = document.createElement('div');
     fill.className = 'overlayFill';
     fill.style.width = scaled + 'px';
     fill.style.height = scaled + 'px';
-    fill.style.background = 'rgba(220, 70, 70, 0.22)'; // soft red
+    fill.style.background = 'rgba(220, 70, 70, 0.22)';
     fill.style.border = `1px solid rgba(220,70,70,0.28)`;
     fill.style.left = '50%';
     fill.style.top = '50%';
@@ -450,10 +471,8 @@ function placeSideColumn(sideContainer, toRight){
   if (!toRight) sideContainer.classList.add('left');
 }
 
-/* runCompare: always show ghost (grey original) beneath colored scaled recommendation items.
-   - plate-area is scaled so inner edge aligns
-   - for shrink: mini-plate fill drawn then colored scaled items placed on top
-   - for growth: green annulus drawn and colored scaled items placed on top
+/* runCompare: always show ghost (grey original + faint inner) beneath colored scaled recommendation items.
+   For green-case the faint inner-grey layer makes the "grey inside" effect visible under the scaled colored items.
 */
 function runCompare(targetOverlay, targetBase, annNode, sideContainer, captionEl, targetMap, title){
   if (!payload) { alert('No saved plate'); return; }
@@ -481,18 +500,22 @@ function runCompare(targetOverlay, targetBase, annNode, sideContainer, captionEl
     requestAnimationFrame(()=> plateArea.style.transform = `translate(-50%,-50%) scale(${scale})`);
   }
 
-  // draw annulus / filled mini-plate
+  // draw annulus / mini-plate
   drawAnnulus(annNode, scale);
 
-  // Ensure ghost images are always visible beneath scaled items
+  // collect image lists
   const ghostImgs = targetOverlay._ghost ? Array.from(targetOverlay._ghost.querySelectorAll('img')) : [];
+  const ghostInnerImgs = targetOverlay._ghostInner ? Array.from(targetOverlay._ghostInner.querySelectorAll('img')) : [];
   const scaledImgs = targetOverlay._scaled ? Array.from(targetOverlay._scaled.querySelectorAll('img')) : [];
 
-  // normalize styling: ghosts grey, scaled colored
+  // normalize styling
   ghostImgs.forEach(i => { i.className = 'ghost-img'; });
+  ghostInnerImgs.forEach(i => { i.className = 'ghost-inner'; });
   scaledImgs.forEach(i => { i.className = 'scaled-img'; });
 
-  // scale each recommendation item around its center
+  // For green case (scale >= 1) we want ghost grey + faint inner grey visible and colored scaled items on top.
+  // For red case (scale < 1) ghost grey sits beneath translucent mini-plate; scaled items colored on top.
+  // Scaling of recommendation items happens in both cases.
   const scaledGroup = targetOverlay._scaled;
   if (scaledGroup) {
     Array.from(scaledGroup.querySelectorAll('.itemWrapper')).forEach(sw => {
@@ -500,6 +523,16 @@ function runCompare(targetOverlay, targetBase, annNode, sideContainer, captionEl
       sw.style.transition = 'transform 700ms cubic-bezier(.2,.9,.2,1)';
       requestAnimationFrame(()=> sw.style.transform = `translate(-50%,-50%) rotate(${rotate}deg) scale(${scale})`);
     });
+  }
+
+  // Ensure ghost inner sits above ghost but below scaled — already ordered that way when appended.
+  // For green case, make ghost images a bit more visible (so inner-grey shows) while still muted.
+  if (scale >= 1) {
+    ghostImgs.forEach(i => i.style.opacity = '0.45');
+    ghostInnerImgs.forEach(i => i.style.opacity = '0.22');
+  } else {
+    ghostImgs.forEach(i => i.style.opacity = '0.9');
+    ghostInnerImgs.forEach(i => i.style.opacity = '0.18');
   }
 
   // side column placement
