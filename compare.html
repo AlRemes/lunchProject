@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8"/>
-<title>Compare Plate — bread mapping and stable sizes</title>
+<title>Compare Plate — bread-with-butter fix + recommended 2000 kcal</title>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <style>
   :root { --plate-wrapper-size:520px; --plate-diameter:480px; }
@@ -57,7 +57,7 @@
     <div class="panels">
       <div class="panel">
         <div class="panelHeader">
-          <div class="panelTitle">Compare to Recommended (Finland)</div>
+          <div class="panelTitle">Compare to Recommended (2000 kcal/day)</div>
           <div style="flex:1"></div>
           <div class="controlsRow">
             <button id="cmpRecommendedBtn" class="btn">Run Compare</button>
@@ -74,7 +74,7 @@
           </div>
 
           <div>
-            <div class="caption" id="captionRecommended">Press Run Compare to scale the plate to Finnish recommendation.</div>
+            <div class="caption" id="captionRecommended">Press Run Compare to scale the plate to 2000 kcal/day → lunch ≈ 667 kcal.</div>
           </div>
         </div>
       </div>
@@ -108,12 +108,12 @@
   </div>
 
 <script>
-/* SESSION key and local files */
+/* CONFIG */
 const SESSION_KEY = 'plate_positions_fallback';
 const LOCAL_CSV = 'daily-per-capita-caloric-supply.csv';
 const LOCAL_META = 'daily-per-capita-caloric-supply.metadata.json';
 
-/* Image catalog — extended bread mappings to preserve exact bread variants */
+/* Image catalog: include explicit keys for bread variants so bread-with-butter maps correctly */
 const CATALOG_IMG = {
   potato: 'images/potato.svg',
   sausage: 'images/sausage.svg',
@@ -124,6 +124,7 @@ const CATALOG_IMG = {
   'cheese-bread': 'images/cheese-bread.svg',
   'bread-with-butter': 'images/bread-with-butter.svg',
   'bread_with_butter': 'images/bread-with-butter.svg',
+  'bread with butter': 'images/bread-with-butter.svg',
   apple: 'images/apple.svg',
   milk: 'images/milk-carton.svg',
   cheese: 'images/cheese.svg',
@@ -150,17 +151,17 @@ const overReal = document.getElementById('overlayReality');
 const sideReal = document.getElementById('sideReal');
 const capReal  = document.getElementById('captionReality');
 
+/* Utilities */
 function escapeAttr(s){ return String(s||'').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
 function resolveImageId(id){
   if (!id) return 'images/unknown.svg';
   if (CATALOG_IMG[id]) return CATALOG_IMG[id];
-  // try normalized variants
-  const norm = id.replace(/\s+/g,'-').toLowerCase();
+  const norm = String(id).trim().toLowerCase().replace(/\s+/g,'-');
   if (CATALOG_IMG[norm]) return CATALOG_IMG[norm];
   return 'images/' + id + '.svg';
 }
 
-/* Robust CSV parser (same as before) */
+/* CSV parser */
 function parseCsv(text){
   const rows=[]; let cur=[]; let curVal=''; let inQuotes=false;
   for (let i=0;i<text.length;i++){
@@ -178,7 +179,7 @@ function parseCsv(text){
   return { header, rows: data };
 }
 
-/* Load local OWID and populate select, fallback provided */
+/* Load OWID, fallback, and add lowest-country option */
 async function loadLocalOwid(){
   latestKcalByCountry = {};
   try {
@@ -261,7 +262,7 @@ function populateCountrySelect(lowestCountry, lowestVal, lowestYear){
   }
 }
 
-/* half clipping helper — chooses side from rotation */
+/* HALF clipping helper */
 function applyHalfClass(imgEl, fraction, rotationDeg){
   if (!imgEl) return;
   imgEl.classList.remove('clip-half-left','clip-half-right');
@@ -273,41 +274,35 @@ function applyHalfClass(imgEl, fraction, rotationDeg){
   }
 }
 
-/* Only scale visually when fraction is clearly less than half.
-   Use strict cutoff 0.49 to avoid rounding edge cases; apply scale
-   directly on img element so wrapper rotation is preserved.
-*/
+/* Fraction-based visual scaling only when fraction clearly < 0.49 */
 function applyFractionScaleIfNeeded(imgEl, fraction){
   if (!imgEl) return;
-  imgEl.style.transform = ''; // reset and then apply scale-only if needed
+  imgEl.style.transform = '';
   if (typeof fraction === 'number' && fraction < 0.49) {
     const s = Math.max(0.25, Math.min(1, fraction));
     imgEl.style.transform = `scale(${s})`;
   }
 }
 
-/* compute side slots for side column */
+/* Side slots */
 function computeSideSlots(canvasEl){
   const rect = canvasEl.getBoundingClientRect();
   const plateDiameter = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--plate-diameter')) || 480;
   const plateRight = (rect.width/2) + (plateDiameter/2);
   const gap = Math.max(8, Math.round(Math.min(rect.width, rect.height) * 0.02));
   const columnX = Math.min(rect.width - 30, Math.round(plateRight + gap));
-  const startY = 40;
-  const spacing = 18 + 86;
-  const slots = [];
-  const max = Math.max(4, Math.floor((rect.height - startY - 20) / spacing));
+  const startY = 40; const spacing = 18 + 86;
+  const slots=[]; const max = Math.max(4, Math.floor((rect.height - startY - 20)/spacing));
   for (let i=0;i<max;i++) slots.push({ x: columnX, y: startY + i * spacing });
   return slots;
 }
 
-/* render base (on-plate items and side items) */
+/* Render base (onplate + side) */
 function renderBase(targetBase, sideContainer){
   targetBase.innerHTML = ''; sideContainer.innerHTML = '';
   const wrap = document.createElement('div'); wrap.className = 'plateWrap';
   const inner = document.createElement('div'); inner.className = 'plateInner';
   wrap.appendChild(inner); targetBase.appendChild(wrap);
-
   const slots = computeSideSlots(targetBase.parentElement);
 
   (payload.positions || []).forEach(p => {
@@ -330,7 +325,6 @@ function renderBase(targetBase, sideContainer){
     const w = document.createElement('div'); w.className = 'itemWrapper'; w.dataset.onplate = '1';
     w.style.position = 'absolute'; w.style.left = (p.x||0) + 'px'; w.style.top = (p.y||0) + 'px';
     w.style.width = (p.sizePx||48) + 'px'; w.style.height = (p.sizePx||48) + 'px';
-    // wrapper keeps translate + rotate only
     w.style.transform = `translate(-50%,-50%) rotate(${p.rotationDeg||0}deg)`;
     const img = document.createElement('img'); img.src = p._imgOverride || resolveImageId(p.id); img.alt = p.label || p.id || '';
     applyHalfClass(img, fraction, p.rotationDeg || 0);
@@ -339,7 +333,7 @@ function renderBase(targetBase, sideContainer){
   });
 }
 
-/* build overlay groups (ghost, scaled, ghost-inner) */
+/* Build overlay groups */
 function buildOverlay(targetOverlay){
   targetOverlay.innerHTML = '';
   const wrap = document.createElement('div'); wrap.className = 'plateWrap';
@@ -352,38 +346,30 @@ function buildOverlay(targetOverlay){
     const fraction = (typeof p.fraction === 'number') ? p.fraction : (p.gramsPerPortion ? p.grams / p.gramsPerPortion : 1);
     const sizePx = p.sizePx || 48;
 
-    // ghost (grey silhouette) - wrapper has rotation; img handles clipping/scale
     const gw = document.createElement('div'); gw.className = 'itemWrapper';
     gw.style.position = 'absolute'; gw.style.left = (p.x||0) + 'px'; gw.style.top = (p.y||0) + 'px';
     gw.style.width = sizePx + 'px'; gw.style.height = sizePx + 'px';
     gw.style.transform = `translate(-50%,-50%) rotate(${p.rotationDeg||0}deg)`;
     const gimg = document.createElement('img'); gimg.src = p._imgOverride || resolveImageId(p.id); gimg.alt = p.label||p.id||'';
-    gimg.className = 'ghost-img';
-    applyHalfClass(gimg, fraction, p.rotationDeg || 0);
-    applyFractionScaleIfNeeded(gimg, fraction);
+    gimg.className = 'ghost-img'; applyHalfClass(gimg, fraction, p.rotationDeg || 0); applyFractionScaleIfNeeded(gimg, fraction);
     gw.appendChild(gimg); ghost.appendChild(gw);
 
-    // scaled (colored)
     const sw = document.createElement('div'); sw.className = 'itemWrapper';
     sw.style.position = 'absolute'; sw.style.left = (p.x||0) + 'px'; sw.style.top = (p.y||0) + 'px';
     sw.style.width = sizePx + 'px'; sw.style.height = sizePx + 'px';
     sw.dataset.rotate = (p.rotationDeg||0);
     sw.style.transform = `translate(-50%,-50%) rotate(${p.rotationDeg||0}deg) scale(1)`;
     const simg = document.createElement('img'); simg.src = p._imgOverride || resolveImageId(p.id); simg.alt = p.label||p.id||'';
-    simg.className = 'scaled-img';
-    applyHalfClass(simg, fraction, p.rotationDeg || 0);
-    applyFractionScaleIfNeeded(simg, fraction);
+    simg.className = 'scaled-img'; applyHalfClass(simg, fraction, p.rotationDeg || 0); applyFractionScaleIfNeeded(simg, fraction);
     sw.appendChild(simg); scaled.appendChild(sw);
 
-    // ghostInner (small grey inside in growth case)
     const giw = document.createElement('div'); giw.className = 'itemWrapper';
     giw.style.position = 'absolute'; giw.style.left = (p.x||0) + 'px'; giw.style.top = (p.y||0) + 'px';
     giw.style.width = sizePx + 'px'; giw.style.height = sizePx + 'px';
     const innerScale = 0.72;
     giw.style.transform = `translate(-50%,-50%) rotate(${p.rotationDeg||0}deg) scale(${innerScale})`;
     const giimg = document.createElement('img'); giimg.src = p._imgOverride || resolveImageId(p.id); giimg.alt = p.label||p.id||'';
-    giimg.className = 'ghost-inner-img';
-    applyHalfClass(giimg, fraction, p.rotationDeg || 0);
+    giimg.className = 'ghost-inner-img'; applyHalfClass(giimg, fraction, p.rotationDeg || 0);
     if (fraction < 0.49) giimg.style.transform = `scale(${innerScale * Math.max(0.25, Math.min(1, fraction))})`;
     giw.appendChild(giimg); ghostInner.appendChild(giw);
   });
@@ -397,7 +383,7 @@ function buildOverlay(targetOverlay){
   targetOverlay._ghostInner = ghostInner;
 }
 
-/* annulus visual */
+/* Annulus drawing */
 function drawAnnulus(node, scale){
   node.innerHTML = '';
   if (!scale || isNaN(scale)) return;
@@ -425,7 +411,7 @@ function drawAnnulus(node, scale){
   }
 }
 
-/* calories mapping */
+/* Calories mapping */
 const CAL_PER_G = { potato:0.77, sausage:2.5, carrot:0.41, bread_variant:2.5, bread:2.5, apple:0.52, milk:0.64, water:0.0 };
 const avgKcalPerGram = 1.5;
 function kcalToGrams(kcal){ return Math.max(0, Math.round(kcal / avgKcalPerGram)); }
@@ -443,7 +429,7 @@ function totalCaloriesPayloadFromPositions(positions){ return (positions||[]).re
 function totalCaloriesPayload(){ if (payload && typeof payload.totalCalories === 'number') return Math.max(0, Math.round(payload.totalCalories)); return Math.max(0, Math.round(totalCaloriesPayloadFromPositions(payload.positions||[]))); }
 function computeScaleFromCalories(targetMap){ const actual = Math.max(1, totalCaloriesPayload()); const target = Math.max(0, totalCaloriesFromMap(targetMap||{})); if (target <= 0) return 0.001; return Math.max(0.12, Math.min(3.0, Math.sqrt(target / actual))); }
 
-/* compare logic (reality caption updated) */
+/* Compare logic (reality caption updated) */
 function placeSideColumn(sideContainer, toRight){ if (!sideContainer) return; sideContainer.classList.remove('left'); if (!toRight) sideContainer.classList.add('left'); }
 
 function renderSideOnly(sideContainer, targetBase){
@@ -524,7 +510,7 @@ function runCompare(targetOverlay, targetBase, annNode, sideContainer, captionEl
   }, 700);
 }
 
-/* clear helper */
+/* Clear helper */
 function clearCompare(targetOverlay, targetBase, annNode, sideContainer, captionEl){
   targetOverlay.innerHTML = ''; annNode.innerHTML = ''; sideContainer.innerHTML = '';
   const wrap = targetBase.querySelector('.plateWrap');
@@ -536,8 +522,12 @@ function clearCompare(targetOverlay, targetBase, annNode, sideContainer, caption
 /* UI wiring */
 document.getElementById('backBtn').addEventListener('click', ()=> history.back());
 document.getElementById('resetAllBtn').addEventListener('click', ()=> { clearCompare(overRec, baseRec, annRec, sideRec, capRec); clearCompare(overReal, baseReal, annReal, sideReal, capReal); });
+
 document.getElementById('cmpRecommendedBtn').addEventListener('click', ()=> {
-  const recommendedMap = { carrot:150, apple:150, potato:150, bread_variant:40, sausage:75, milk:250 };
+  const recommendedDaily = 2000; // kcal/day (updated)
+  const lunchKcal = recommendedDaily / 3;
+  const lunchGrams = kcalToGrams(lunchKcal);
+  const recommendedMap = buildTargetGramsMap(lunchGrams);
   runCompare(overRec, baseRec, annRec, sideRec, capRec, recommendedMap, false);
 });
 document.getElementById('clearRecommendedBtn').addEventListener('click', ()=> clearCompare(overRec, baseRec, annRec, sideRec, capRec));
@@ -551,7 +541,7 @@ document.getElementById('cmpRealityBtn').addEventListener('click', ()=> {
 });
 document.getElementById('clearRealityBtn').addEventListener('click', ()=> clearCompare(overReal, baseReal, annReal, sideReal, capReal));
 
-/* init: load payload from sessionStorage and OWID */
+/* INIT: load payload from sessionStorage and OWID */
 (async function init(){
   try { const raw = sessionStorage.getItem(SESSION_KEY); if (raw) payload = JSON.parse(raw); } catch(e){ payload = null; }
   if (payload) {
