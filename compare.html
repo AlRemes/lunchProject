@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8"/>
-<title>Compare Plate — fixed shrink/growth ordering</title>
+<title>Compare Plate — local OWID reality (fixed visuals)</title>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <style>
   :root { --plate-wrapper-size:520px; --plate-diameter:480px; }
@@ -26,12 +26,14 @@
     padding:0;
     box-sizing:border-box;
     border-radius:50%;
+    /* Keep canvas square and circular visually */
     aspect-ratio:1/1;
   }
   .layer{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;box-sizing:border-box}
   .sideColumn{position:absolute;top:14px;right:18px;display:flex;flex-direction:column;gap:10px;pointer-events:none}
   .sideColumn.left{right:auto;left:18px}
   .sideItem{width:86px;height:86px;display:flex;align-items:center;justify-content:center}
+  /* wrapper that will be scaled so annulus and plate remain perfectly aligned */
   .plateWrap {
     position:absolute;
     left:50%; top:50%;
@@ -43,15 +45,27 @@
     box-sizing:border-box;
     aspect-ratio:1/1;
   }
-  .plateInner { position:relative; width:100%; height:100%; border-radius:50%; box-sizing:border-box; }
+  .plateInner {
+    position:relative;
+    width:100%; height:100%;
+    border-radius:50%;
+    box-sizing:border-box;
+  }
   .ghostGroup, .ghostInnerGroup, .scaledGroup{
-    position:absolute; left:0; top:0; width:100%; height:100%; transform-origin:50% 50%;
+    position:absolute; left:0; top:0;
+    width:100%; height:100%;
+    transform-origin:50% 50%;
     pointer-events:none; overflow:visible; border-radius:50%; box-sizing:border-box;
   }
-  .scaledGroup { z-index:10; }
-  .ghostInnerGroup { z-index:12; pointer-events:none; }
-  .ghostGroup { z-index:8; pointer-events:none; }
-  .overlayFill{ position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); border-radius:50%; pointer-events:none; box-sizing:border-box;}
+  /* Important: scaled (colored) items are below ghost-inner (small grey) so inner appears inside colored */
+  .scaledGroup { z-index: 10; }
+  .ghostInnerGroup { z-index: 12; pointer-events:none; }
+  .ghostGroup { z-index: 8; pointer-events:none; } /* optional full grey behind */
+  .overlayFill{
+    position:absolute; left:50%; top:50%;
+    transform:translate(-50%,-50%); border-radius:50%;
+    pointer-events:none; box-sizing:border-box;
+  }
   .itemWrapper{position:absolute; transform:translate(-50%,-50%); pointer-events:none}
   .itemWrapper img{display:block;width:100%;height:100%;object-fit:contain}
   .ghost-img{filter:grayscale(100%) contrast(80%); opacity:0.45}
@@ -133,10 +147,11 @@
   </div>
 
 <script>
-/* Key fixes implemented:
- - For shrink (target scale < 1): show original-size ghost (grey) beneath and the smaller colored scaled items on top.
- - For growth (scale >= 1): show colored scaled items as larger with a smaller grey inner on top (ghost-inner) so grey appears inside colored.
- - Avoid accidental duplication: overlay elements are created once per payload position and we only toggle visibility/order at runCompare time; we also ensure overlays are cleared before building.
+/* Fixed compare.html:
+   - overlay ordering: scaled colored items are created first; a slightly smaller grey "inner" image is placed ON TOP of each colored item (not for side items)
+   - wrapper-scaling and aspect-ratio ensure the plate remains circular and annulus aligns
+   - both Recommended and Reality panels use the same overlay logic
+   - expects local OWID CSV + metadata in same folder (as before)
 */
 
 const SESSION_KEY = 'plate_positions_fallback';
@@ -172,30 +187,39 @@ const overReal = document.getElementById('overlayReality');
 const sideReal = document.getElementById('sideReal');
 const capReal  = document.getElementById('captionReality');
 
-/* CSV parser */
+/* CSV parser (robust for quoted fields) */
 function parseCsv(text){
-  const rows=[]; let cur=[]; let curVal=''; let inQuotes=false;
+  const rows = []; let cur = []; let curVal=''; let inQuotes=false;
   for (let i=0;i<text.length;i++){
-    const ch=text[i], nxt=text[i+1];
-    if (ch==='"') { if (inQuotes && nxt==='"'){ curVal+='"'; i++; continue; } inQuotes=!inQuotes; continue; }
-    if (!inQuotes && (ch==='\n' || ch==='\r')) { if (ch==='\r' && text[i+1]==='\n') i++; cur.push(curVal); rows.push(cur); cur=[]; curVal=''; continue; }
-    if (!inQuotes && ch===','){ cur.push(curVal); curVal=''; continue; }
-    curVal+=ch;
+    const ch = text[i], nxt = text[i+1];
+    if (ch === '"') {
+      if (inQuotes && nxt === '"') { curVal += '"'; i++; continue; }
+      inQuotes = !inQuotes; continue;
+    }
+    if (!inQuotes && (ch === '\n' || ch === '\r')) {
+      if (ch === '\r' && text[i+1] === '\n') i++;
+      cur.push(curVal); rows.push(cur); cur = []; curVal = ''; continue;
+    }
+    if (!inQuotes && ch === ',') { cur.push(curVal); curVal=''; continue; }
+    curVal += ch;
   }
-  if (curVal!==''||cur.length) cur.push(curVal);
+  if (curVal !== '' || cur.length) cur.push(curVal);
   if (cur.length) rows.push(cur);
   if (!rows.length) return { header:[], rows:[] };
-  const header = rows[0].map(h=>h.trim());
-  const data = rows.slice(1).map(r=>{ const o={}; for(let j=0;j<header.length;j++) o[header[j]] = r[j]!==undefined? r[j] : ''; return o; });
-  return { header, rows:data };
+  const header = rows[0].map(h => h.trim());
+  const data = rows.slice(1).map(r => {
+    const obj = {}; for (let j=0;j<header.length;j++) obj[header[j]] = r[j] !== undefined ? r[j] : '';
+    return obj;
+  });
+  return { header, rows: data };
 }
 
-/* load local OWID CSV + metadata */
+/* Load local OWID CSV + metadata */
 async function loadLocalOwid(){
   latestKcalByCountry = {};
   try {
-    const [metaRes,csvRes] = await Promise.all([fetch(LOCAL_META), fetch(LOCAL_CSV)]);
-    if (!metaRes.ok || !csvRes.ok) throw new Error('fetch failed');
+    const [metaRes, csvRes] = await Promise.all([ fetch(LOCAL_META), fetch(LOCAL_CSV) ]);
+    if (!metaRes.ok || !csvRes.ok) throw new Error('Failed to fetch local OWID files');
     const meta = await metaRes.json();
     const csvText = await csvRes.text();
     const parsed = parseCsv(csvText);
@@ -203,46 +227,58 @@ async function loadLocalOwid(){
     const countryCol = parsed.header.find(h => /country|entity|name/i.test(h)) || parsed.header[0];
     const yearCol = parsed.header.find(h => /year/i.test(h)) || parsed.header[1];
 
+    // find a sensible value column via metadata or heuristics
     let valueCol = null;
     if (meta && meta.variables && Array.isArray(meta.variables)) {
+      // variables often include dataColumn or shortName
       const candidate = meta.variables.find(v => v.dataColumn || v.column || v.name);
       if (candidate) valueCol = candidate.dataColumn || candidate.column || candidate.name;
     }
     if (!valueCol) {
       const lc = parsed.header.map(h => h.toLowerCase());
       const candidates = ['daily supply of calories per person','daily-per-capita-caloric-supply','value','daily supply','calories'];
-      for (const c of candidates) { const idx = lc.findIndex(h=>h.includes(c)); if (idx !== -1){ valueCol = parsed.header[idx]; break; } }
+      for (const c of candidates) {
+        const idx = lc.findIndex(h => h.includes(c));
+        if (idx !== -1) { valueCol = parsed.header[idx]; break; }
+      }
     }
+    // fallback: detect numeric column (not country/year)
     if (!valueCol && parsed.rows.length) {
       const sample = parsed.rows[0];
-      for (const k of Object.keys(sample)){ if (k===countryCol||k===yearCol) continue; const v = sample[k]; if (v!=='' && !isNaN(Number(v))){ valueCol = k; break; } }
+      for (const k of Object.keys(sample)) {
+        if (k === countryCol || k === yearCol) continue;
+        const v = sample[k];
+        if (v !== '' && !isNaN(Number(v))) { valueCol = k; break; }
+      }
     }
 
     const byCountry = {};
-    parsed.rows.forEach(r=>{
-      const country = (r[countryCol]||'').trim(); const year = Number(r[yearCol]);
-      const v = valueCol ? (r[valueCol]===''? NaN : Number(r[valueCol])) : NaN;
+    parsed.rows.forEach(r => {
+      const country = (r[countryCol] || '').trim();
+      const year = Number(r[yearCol]);
+      const v = valueCol ? (r[valueCol] === '' ? NaN : Number(r[valueCol])) : NaN;
       if (!country || !year || isNaN(v)) return;
       if (!byCountry[country]) byCountry[country] = {};
       byCountry[country][year] = v;
     });
 
-    COUNTRY_LIST.forEach(c=>{
+    COUNTRY_LIST.forEach(c => {
       const data = byCountry[c];
       if (!data) { latestKcalByCountry[c] = null; return; }
       const yrs = Object.keys(data).map(Number).filter(y=>!isNaN(y));
-      if (!yrs.length) { latestKcalByCountry[c]=null; return; }
+      if (!yrs.length) { latestKcalByCountry[c] = null; return; }
       const latest = Math.max(...yrs);
       latestKcalByCountry[c] = { year: latest, kcal: data[latest] };
     });
     return true;
   } catch (e) {
-    console.error('OWID load error', e);
+    console.error('loadLocalOwid error', e);
     COUNTRY_LIST.forEach(c => latestKcalByCountry[c] = null);
     return false;
   }
 }
 
+/* Populate country select */
 function populateCountrySelect(){
   countrySelect.innerHTML = '';
   COUNTRY_LIST.forEach(c => {
@@ -254,116 +290,129 @@ function populateCountrySelect(){
   });
 }
 
+/* small helpers */
 function escapeAttr(s){ return String(s||'').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 function resolveImage(p){ if (p._imgOverride) return p._imgOverride; if (p.id === 'bread_variant') return CATALOG_IMG.bread_variant; if (p.id && CATALOG_IMG[p.id]) return CATALOG_IMG[p.id]; return 'images/' + (p.id || 'unknown') + '.svg'; }
 
+/* Render base (create plateWrap + plateInner)
+   Note: base items are placed inside plateInner. overlay groups will be created separately but inside their own plateWrap sibling.
+*/
 function computeSideSlots(canvasEl){
   const rect = canvasEl.getBoundingClientRect();
   const plateDiameter = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--plate-diameter')) || 480;
   const plateRight = (rect.width/2) + (plateDiameter/2);
   const gap = Math.max(8, Math.round(Math.min(rect.width, rect.height) * 0.02));
   const columnX = Math.min(rect.width - 30, Math.round(plateRight + gap));
-  const startY = 40; const spacing = 18 + 86;
+  const startY = 40;
+  const spacing = 18 + 86;
   const slots = []; const max = Math.max(4, Math.floor((rect.height - startY - 20) / spacing));
   for (let i=0;i<max;i++) slots.push({ x: columnX, y: startY + i * spacing });
   return slots;
 }
 
-/* Render base plate (plateWrap + plateInner) */
 function renderBase(targetBase, sideContainer){
   targetBase.innerHTML = ''; sideContainer.innerHTML = '';
-  const wrap = document.createElement('div'); wrap.className='plateWrap';
-  const inner = document.createElement('div'); inner.className='plateInner'; wrap.appendChild(inner); targetBase.appendChild(wrap);
+  const wrap = document.createElement('div'); wrap.className = 'plateWrap';
+  const inner = document.createElement('div'); inner.className = 'plateInner';
+  wrap.appendChild(inner); targetBase.appendChild(wrap);
   const slots = computeSideSlots(targetBase.parentElement);
-  (payload.positions||[]).forEach(p=>{
+
+  (payload.positions || []).forEach(p => {
     if (p.placement === 'side') {
-      const idx = typeof p.sideSlot === 'number' ? p.sideSlot : 0;
+      const idx = (typeof p.sideSlot === 'number') ? p.sideSlot : 0;
       const chosen = slots[Math.min(idx, slots.length-1)] || {x:targetBase.parentElement.clientWidth-100,y:40};
       const si = document.createElement('div'); si.className='sideItem'; si.style.position='absolute';
-      si.style.left=(chosen.x-40)+'px'; si.style.top=(chosen.y-20)+'px';
+      si.style.left = (chosen.x - 40) + 'px'; si.style.top = (chosen.y - 20) + 'px';
       const src = p._imgOverride || resolveImage(p);
       si.innerHTML = `<img src="${escapeAttr(src)}" alt="${escapeAttr(p.label||p.id||'')}" style="width:100%;height:100%;object-fit:contain">`;
       sideContainer.appendChild(si); return;
     }
+
     const w = document.createElement('div'); w.className='itemWrapper'; w.dataset.onplate='1';
     w.style.position='absolute'; w.style.left=(p.x||0)+'px'; w.style.top=(p.y||0)+'px';
     w.style.width=(p.sizePx||48)+'px'; w.style.height=(p.sizePx||48)+'px';
     w.style.transform = `translate(-50%,-50%) rotate(${p.rotationDeg||0}deg)`;
-    const img = document.createElement('img'); img.src=p._imgOverride||resolveImage(p); img.alt=p.label||p.id||'';
-    const frac = typeof p.fraction === 'number' ? p.fraction : 1;
+    const img = document.createElement('img'); img.src = p._imgOverride || resolveImage(p); img.alt = p.label||p.id||'';
+    const frac = (typeof p.fraction === 'number') ? p.fraction : 1;
     if (Math.abs(frac - 0.5) < 0.001) img.classList.add('clip-half');
     else if (frac < 0.5) img.style.transform = `scale(${Math.max(0.25, Math.min(1, frac))})`;
     w.appendChild(img); inner.appendChild(w);
   });
 }
 
-/* Build overlay once per panel. It creates three groups (ghost, scaled, ghostInner) with one element per payload position.
-   We do NOT duplicate items anywhere else; runCompare will decide which groups are visible/stacked depending on scale.
+/* Build overlay: scaledGroup (colored), then ghostInnerGroup (smaller grey) placed ON TOP of scaled items,
+   plus an optional ghostGroup beneath for full grey shadow if wanted.
 */
 function buildOverlay(targetOverlay){
   targetOverlay.innerHTML = '';
-  const wrap = document.createElement('div'); wrap.className='plateWrap';
-  const ghost = document.createElement('div'); ghost.className='ghostGroup';
-  const scaled = document.createElement('div'); scaled.className='scaledGroup';
-  const ghostInner = document.createElement('div'); ghostInner.className='ghostInnerGroup';
+  const wrap = document.createElement('div'); wrap.className = 'plateWrap';
+  const ghost = document.createElement('div'); ghost.className = 'ghostGroup';
+  const ghostInner = document.createElement('div'); ghostInner.className = 'ghostInnerGroup';
+  const scaled = document.createElement('div'); scaled.className = 'scaledGroup';
 
-  (payload.positions||[]).forEach((p, idx) => {
+  (payload.positions || []).forEach(p => {
     if (p.placement !== 'onplate') return;
 
-    // ghost (full-size grey) — exactly one per position
-    const gw = document.createElement('div'); gw.className='itemWrapper';
-    gw.style.position='absolute'; gw.style.left=(p.x||0)+'px'; gw.style.top=(p.y||0)+'px';
-    gw.style.width=(p.sizePx||48)+'px'; gw.style.height=(p.sizePx||48)+'px';
-    gw.style.transform = `translate(-50%,-50%) rotate(${p.rotationDeg||0}deg)`;
-    const gimg = document.createElement('img'); gimg.src = p._imgOverride || resolveImage(p); gimg.alt = p.label||p.id||'';
-    gimg.dataset.role = 'ghost'; gimg.className='ghost-img'; gw.appendChild(gimg); ghost.appendChild(gw);
-
-    // scaled (colored) — one per position; scaled transform applied later in runCompare
+    // scaled (colored) item: base visible shape
     const sw = document.createElement('div'); sw.className='itemWrapper';
     sw.style.position='absolute'; sw.style.left=(p.x||0)+'px'; sw.style.top=(p.y||0)+'px';
     sw.style.width=(p.sizePx||48)+'px'; sw.style.height=(p.sizePx||48)+'px';
     sw.dataset.rotate = (p.rotationDeg||0);
-    // default transform is centered; runCompare will set scale/rotation
     sw.style.transform = `translate(-50%,-50%) rotate(${p.rotationDeg||0}deg) scale(1)`;
-    const simg = document.createElement('img'); simg.src = p._imgOverride || resolveImage(p); simg.alt = p.label||p.id||'';
-    simg.dataset.role = 'scaled'; simg.className='scaled-img'; sw.appendChild(simg); scaled.appendChild(sw);
+    const simg = document.createElement('img'); simg.src=p._imgOverride||resolveImage(p); simg.alt=p.label||p.id||'';
+    simg.className='scaled-img';
+    const sfrac = (typeof p.fraction === 'number') ? p.fraction : 1;
+    if (Math.abs(sfrac - 0.5) < 0.001) simg.classList.add('clip-half');
+    else if (sfrac < 0.5) simg.style.transform = `scale(${Math.max(0.25, Math.min(1, sfrac))})`;
+    sw.appendChild(simg); scaled.appendChild(sw);
 
-    // ghost-inner (smaller grey) — one per position, used for growth case (appears on top of colored)
+    // ghost-inner: slightly smaller grey image placed ON TOP (so it appears inside the colored shape)
     const giw = document.createElement('div'); giw.className='itemWrapper';
     giw.style.position='absolute'; giw.style.left=(p.x||0)+'px'; giw.style.top=(p.y||0)+'px';
     giw.style.width=(p.sizePx||48)+'px'; giw.style.height=(p.sizePx||48)+'px';
-    // initial small scale; runCompare may adjust visibility
+    // scale down the inner so it sits visually inside outer
     const innerScale = 0.72;
     giw.style.transform = `translate(-50%,-50%) rotate(${p.rotationDeg||0}deg) scale(${innerScale})`;
-    const giimg = document.createElement('img'); giimg.src = p._imgOverride || resolveImage(p); giimg.alt = p.label||p.id||'';
-    giimg.dataset.role = 'ghostInner'; giimg.className='ghost-inner-img';
-    giw.appendChild(giimg); ghostInner.appendChild(giw);
+    const giimg = document.createElement('img'); giimg.src=p._imgOverride||resolveImage(p); giimg.alt=p.label||p.id||'';
+    giimg.className='ghost-inner-img';
+    if (Math.abs(sfrac - 0.5) < 0.001) giimg.classList.add('clip-half');
+    ghostInner.appendChild(giw); giw.appendChild(giimg);
+
+    // optional full grey ghost behind (kept but lower z-index)
+    const gw = document.createElement('div'); gw.className='itemWrapper';
+    gw.style.position='absolute'; gw.style.left=(p.x||0)+'px'; gw.style.top=(p.y||0)+'px';
+    gw.style.width=(p.sizePx||48)+'px'; gw.style.height=(p.sizePx||48)+'px';
+    gw.style.transform = `translate(-50%,-50%) rotate(${p.rotationDeg||0}deg)`;
+    const gimg = document.createElement('img'); gimg.src=p._imgOverride||resolveImage(p); gimg.alt=p.label||p.id||'';
+    gimg.className='ghost-img';
+    gw.appendChild(gimg); ghost.appendChild(gw);
   });
 
-  // order within wrap: ghost (back), scaled (middle), ghostInner (top)
+  // order inside wrap: ghost (back), scaled (colored), ghostInner (top)
   wrap.appendChild(ghost); wrap.appendChild(scaled); wrap.appendChild(ghostInner);
   targetOverlay.appendChild(wrap);
-
-  // store refs for runCompare
   targetOverlay._wrap = wrap;
   targetOverlay._ghost = ghost;
-  targetOverlay._scaled = scaled;
   targetOverlay._ghostInner = ghostInner;
+  targetOverlay._scaled = scaled;
 }
 
-/* Annulus and mini-plate */
+/* draw annulus / filled mini-plate; use same base diameter so sizing stays consistent */
 function drawAnnulus(node, scale){
   node.innerHTML = '';
   if (!scale || isNaN(scale)) return;
   const base = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--plate-diameter')) || 480;
   const scaled = Math.max(2, Math.round(base * scale));
+
   if (scale >= 1) {
     const ann = document.createElement('div'); ann.className='annulus';
     ann.style.position='absolute'; ann.style.left='50%'; ann.style.top='50%'; ann.style.transform='translate(-50%,-50%)';
     ann.style.boxSizing='border-box';
-    const outer = scaled; const thickness = Math.max(4, Math.round((scaled - base) / 2));
+    const outer = scaled;
+    const thickness = Math.max(4, Math.round((scaled - base) / 2));
     ann.style.width = outer + 'px'; ann.style.height = outer + 'px';
-    ann.style.border = `${thickness}px solid rgba(88,196,104,0.95)`; node.appendChild(ann);
+    ann.style.border = `${thickness}px solid rgba(88,196,104,0.95)`;
+    node.appendChild(ann);
   } else {
     const fill = document.createElement('div'); fill.className='overlayFill';
     fill.style.width = scaled + 'px'; fill.style.height = scaled + 'px';
@@ -379,7 +428,7 @@ function drawAnnulus(node, scale){
   }
 }
 
-/* calories/grams helpers */
+/* calories / grams helpers */
 const avgKcalPerGram = 1.5;
 function kcalToGrams(kcal){ return Math.max(0, Math.round(kcal / avgKcalPerGram)); }
 function buildTargetGramsMap(totalGrams){
@@ -388,11 +437,16 @@ function buildTargetGramsMap(totalGrams){
   const totalW = weights.reduce((s,w)=>s+w,0);
   const map = {}; let remaining = totalGrams;
   idsPreferred.forEach((id,i)=>{ const g = Math.round((weights[i]/totalW) * totalGrams); map[id]=g; remaining-=g; });
-  let i =0; while (remaining>0){ const key = idsPreferred[i%idsPreferred.length]; map[key]=(map[key]||0)+1; remaining--; i++; }
+  let i = 0;
+  while (remaining>0){ const key = idsPreferred[i%idsPreferred.length]; map[key]=(map[key]||0)+1; remaining--; i++; }
   return map;
 }
-function totalCaloriesFromMap(map){ let sum=0; Object.keys(map||{}).forEach(id=>{ const grams = map[id]||0; const calPerG = CAL_PER_G[id]!==undefined?CAL_PER_G[id]:0.8; sum+=grams*calPerG; }); return sum; }
-function totalCaloriesPayloadFromPositions(positions){ return (positions||[]).reduce((s,p)=>{ if (typeof p.kcalPerPortion==='number' && typeof p.gramsPerPortion==='number' && p.gramsPerPortion>0){ const calPerG = p.kcalPerPortion / p.gramsPerPortion; return s + (p.grams||0) * calPerG; } const calPerG = CAL_PER_G[p.id] !== undefined ? CAL_PER_G[p.id] : 0.8; return s + (p.grams||0) * calPerG; }, 0); }
+function totalCaloriesFromMap(map){
+  let sum=0; Object.keys(map||{}).forEach(id => { const grams = map[id]||0; const calPerG = CAL_PER_G[id] !== undefined ? CAL_PER_G[id] : 0.8; sum += grams * calPerG; }); return sum;
+}
+function totalCaloriesPayloadFromPositions(positions){
+  return (positions||[]).reduce((s,p)=> { if (typeof p.kcalPerPortion === 'number' && typeof p.gramsPerPortion === 'number' && p.gramsPerPortion>0){ const calPerG = p.kcalPerPortion / p.gramsPerPortion; return s + (p.grams||0)*calPerG; } const calPerG = CAL_PER_G[p.id] !== undefined ? CAL_PER_G[p.id] : 0.8; return s + (p.grams||0)*calPerG; }, 0);
+}
 function totalCaloriesPayload(){ if (payload && typeof payload.totalCalories === 'number') return Math.max(0, Math.round(payload.totalCalories)); return Math.max(0, Math.round(totalCaloriesPayloadFromPositions(payload.positions||[]))); }
 
 function computeScaleFromCalories(targetMap){
@@ -403,89 +457,27 @@ function computeScaleFromCalories(targetMap){
 }
 function placeSideColumn(sideContainer, toRight){ if (!sideContainer) return; sideContainer.classList.remove('left'); if (!toRight) sideContainer.classList.add('left'); }
 
-/* runCompare: key behavior
-   - build overlay (ghost, scaled, ghostInner) once
-   - if scale < 1 (shrink): show ghost (full-size grey) as back layer, show scaled (smaller colored) on top, hide ghostInner.
-     scaled items get transform scale = scale.
-   - if scale >= 1 (growth): show scaled (larger colored) as middle layer with transform scale = scale, and show ghostInner (small grey) ON TOP.
-     ghost (full-size) remains visible beneath but subdued.
-*/
+/* run compare: uses wrapper scaling; overlay built with scaled then ghost-inner on top */
 function runCompare(targetOverlay, targetBase, annNode, sideContainer, captionEl, targetMap){
   if (!payload) { alert('No saved plate'); return; }
   targetOverlay.innerHTML=''; annNode.innerHTML=''; sideContainer.innerHTML='';
   renderSideOnly(sideContainer, targetBase);
   buildOverlay(targetOverlay);
-
   const scale = computeScaleFromCalories(targetMap);
-  // scale the plate wrapper
   const wrap = targetBase.querySelector('.plateWrap');
-  if (wrap){ wrap.style.transition = 'transform 700ms cubic-bezier(.2,.9,.2,1)'; requestAnimationFrame(()=> wrap.style.transform = `translate(-50%,-50%) scale(${scale})`); }
-
+  if (wrap) { wrap.style.transition = 'transform 700ms cubic-bezier(.2,.9,.2,1)'; requestAnimationFrame(()=> wrap.style.transform = `translate(-50%,-50%) scale(${scale})`); }
   drawAnnulus(annNode, scale);
-
-  const ghostGroup = targetOverlay._ghost;
-  const scaledGroup = targetOverlay._scaled;
-  const ghostInnerGroup = targetOverlay._ghostInner;
-
-  // Reset display
-  if (ghostGroup) ghostGroup.style.display = '';
-  if (scaledGroup) scaledGroup.style.display = '';
-  if (ghostInnerGroup) ghostInnerGroup.style.display = '';
-
-  if (scale < 1) {
-    // SHRINK case: original (ghostGroup) should appear big grey BELOW, scaled colored smaller ON TOP.
-    // Ensure ghostInner is hidden; ghost full-size visible but desaturated.
-    if (ghostInnerGroup) ghostInnerGroup.style.display = 'none';
-    if (ghostGroup) {
-      Array.from(ghostGroup.querySelectorAll('.itemWrapper')).forEach(w => {
-        const img = w.querySelector('img'); if (img) img.className = 'ghost-img';
-        w.style.transform = w.style.transform; // keep original transform (full-size)
-      });
-      ghostGroup.style.opacity = '0.65';
-    }
-    if (scaledGroup) {
-      Array.from(scaledGroup.querySelectorAll('.itemWrapper')).forEach(sw => {
-        const rotate = Number(sw.dataset.rotate || 0);
-        sw.style.transition = 'transform 700ms cubic-bezier(.2,.9,.2,1)';
-        // scaledGroup items should be smaller than ghost: apply overall scale
-        requestAnimationFrame(()=> sw.style.transform = `translate(-50%,-50%) rotate(${rotate}deg) scale(${scale})`);
-      });
-    }
-  } else {
-    // GROWTH case: scaled items become larger colored background, ghostInner (smaller grey) sits on top (inner grey inside colored)
-    if (ghostInnerGroup) ghostInnerGroup.style.display = '';
-    if (ghostGroup) {
-      // keep ghost as subtle background
-      Array.from(ghostGroup.querySelectorAll('.itemWrapper')).forEach(w => {
-        const img = w.querySelector('img'); if (img) img.className = 'ghost-img';
-      });
-      ghostGroup.style.opacity = '0.35';
-    }
-    if (scaledGroup) {
-      Array.from(scaledGroup.querySelectorAll('.itemWrapper')).forEach(sw => {
-        const rotate = Number(sw.dataset.rotate || 0);
-        sw.style.transition = 'transform 700ms cubic-bezier(.2,.9,.2,1)';
-        requestAnimationFrame(()=> sw.style.transform = `translate(-50%,-50%) rotate(${rotate}deg) scale(${scale})`);
-      });
-    }
-    // ghostInner should remain at its precomputed inner scale so it looks like grey inside colored
-    if (ghostInnerGroup) {
-      Array.from(ghostInnerGroup.querySelectorAll('.itemWrapper')).forEach(giw => {
-        // ensure inner remains small and visible
-        giw.style.transition = 'opacity 300ms ease';
-        giw.style.opacity = '1';
-      });
-    }
-  }
-
-  // hide original base on-plate items (we keep ghost overlay visible instead)
-  Array.from(targetBase.querySelectorAll('.itemWrapper')).forEach(el => { if (el.dataset.onplate === '1') el.classList.add('hidden-onplate'); });
-
-  // side column placement and caption
+  // make sure images use correct classes
+  const ghostImgs = targetOverlay._ghost ? Array.from(targetOverlay._ghost.querySelectorAll('img')) : [];
+  const ghostInnerImgs = targetOverlay._ghostInner ? Array.from(targetOverlay._ghostInner.querySelectorAll('img')) : [];
+  const scaledImgs = targetOverlay._scaled ? Array.from(targetOverlay._scaled.querySelectorAll('img')) : [];
+  ghostImgs.forEach(i => i.className='ghost-img');
+  ghostInnerImgs.forEach(i => i.className='ghost-inner-img');
+  scaledImgs.forEach(i => i.className='scaled-img');
+  // side column placement
   const actualCal = Math.round(totalCaloriesPayload());
   const targetCal = Math.round(totalCaloriesFromMap(targetMap||{}));
   placeSideColumn(sideContainer, targetCal >= actualCal);
-
   setTimeout(()=> {
     let diffPct = 0;
     if (actualCal > 0) diffPct = Math.round(((targetCal - actualCal) / actualCal) * 100);
@@ -493,44 +485,39 @@ function runCompare(targetOverlay, targetBase, annNode, sideContainer, captionEl
     if (diffPct < 0) captionEl.textContent = `Recommendation is ${Math.abs(diffPct)}% lower than your plate`;
     else if (diffPct > 0) captionEl.textContent = `Recommendation is ${diffPct}% higher than your plate`;
     else captionEl.textContent = 'Recommendation matches your plate';
-  }, 800);
+  }, 750);
 }
 
-/* render side items (colored) */
+/* render only side items */
 function renderSideOnly(sideContainer, targetBase){
-  sideContainer.innerHTML = ''; const slots = computeSideSlots(targetBase.parentElement);
-  (payload.positions||[]).forEach(p=>{
+  sideContainer.innerHTML=''; const slots = computeSideSlots(targetBase.parentElement);
+  (payload.positions||[]).forEach(p => {
     if (p.placement !== 'side') return;
     const idx = (typeof p.sideSlot === 'number') ? p.sideSlot : 0;
     const chosen = slots[Math.min(idx, slots.length-1)] || {x:targetBase.parentElement.clientWidth-100,y:40};
     const si = document.createElement('div'); si.className='sideItem'; si.style.position='absolute';
-    si.style.left=(chosen.x-40)+'px'; si.style.top=(chosen.y-20)+'px';
+    si.style.left = (chosen.x - 40) + 'px'; si.style.top = (chosen.y - 20) + 'px';
     const src = p._imgOverride || resolveImage(p);
     si.innerHTML = `<img src="${escapeAttr(src)}" alt="${escapeAttr(p.label||p.id||'')}" style="width:100%;height:100%;object-fit:contain">`;
     sideContainer.appendChild(si);
   });
 }
 
-/* clearing */
+/* clear compare */
 function clearCompare(targetOverlay, targetBase, annNode, sideContainer, captionEl){
   targetOverlay.innerHTML=''; annNode.innerHTML=''; sideContainer.innerHTML='';
   const wrap = targetBase.querySelector('.plateWrap');
-  if (wrap){ wrap.style.transition='transform 300ms ease'; wrap.style.transform='translate(-50%,-50%) scale(1)'; }
+  if (wrap) { wrap.style.transition = 'transform 300ms ease'; wrap.style.transform = 'translate(-50%,-50%) scale(1)'; }
   Array.from(targetBase.querySelectorAll('.itemWrapper')).forEach(el => { if (el.dataset.onplate === '1') el.classList.remove('hidden-onplate'); });
   captionEl.textContent = 'Comparison cleared. Template remains colored.';
 }
 
-/* helpers for calories */
-const avgKcalPerGram = 1.5;
-function kcalToGrams(kcal){ return Math.max(0, Math.round(kcal / avgKcalPerGram)); }
-function totalCaloriesFromMap(map){ let s=0; Object.keys(map||{}).forEach(k=>{ const g=map[k]||0; const c = CAL_PER_G[k]!==undefined?CAL_PER_G[k]:0.8; s+=g*c; }); return s; }
-function totalCaloriesPayloadFromPositions(positions){ return (positions||[]).reduce((s,p)=>{ if (typeof p.kcalPerPortion==='number'&&typeof p.gramsPerPortion==='number'&&p.gramsPerPortion>0){ const calPerG = p.kcalPerPortion/p.gramsPerPortion; return s + (p.grams||0)*calPerG; } const calPerG = CAL_PER_G[p.id]!==undefined?CAL_PER_G[p.id]:0.8; return s + (p.grams||0)*calPerG; }, 0); }
-function totalCaloriesPayload(){ if (payload && typeof payload.totalCalories === 'number') return Math.max(0, Math.round(payload.totalCalories)); return Math.max(0, Math.round(totalCaloriesPayloadFromPositions(payload.positions||[]))); }
-function buildTargetGramsMap(totalGrams){ const ids=['potato','carrot','bread_variant','sausage','apple','milk']; const weights=[1.3,1,1.1,0.9,0.9,1]; const totalW=weights.reduce((a,b)=>a+b,0); const map={}; let rem=totalGrams; ids.forEach((id,i)=>{ const g=Math.round((weights[i]/totalW)*totalGrams); map[id]=g; rem-=g; }); let i=0; while(rem>0){ const k=ids[i%ids.length]; map[k]=(map[k]||0)+1; rem--; i++; } return map; }
-
-/* UI wiring & init */
+/* UI wiring */
 document.getElementById('backBtn').addEventListener('click', ()=> history.back());
-document.getElementById('resetAllBtn').addEventListener('click', ()=> { clearCompare(overRec, baseRec, annRec, sideRec, capRec); clearCompare(overReal, baseReal, annReal, sideReal, capReal); });
+document.getElementById('resetAllBtn').addEventListener('click', ()=> {
+  clearCompare(overRec, baseRec, annRec, sideRec, capRec);
+  clearCompare(overReal, baseReal, annReal, sideReal, capReal);
+});
 
 document.getElementById('cmpRecommendedBtn').addEventListener('click', ()=> {
   const recommendedMap = { carrot:150, apple:150, potato:150, bread_variant:0, sausage:75, milk:250, water:0 };
@@ -544,19 +531,22 @@ cmpRealityBtn.addEventListener('click', ()=> {
   const country = countrySelect.value;
   const info = latestKcalByCountry[country];
   if (!info || !info.kcal) { alert('No data for ' + country); return; }
-  const dailyKcal = info.kcal; const lunchKcal = dailyKcal/3; const lunchGrams = kcalToGrams(lunchKcal);
+  const dailyKcal = info.kcal;
+  const lunchKcal = dailyKcal / 3;
+  const lunchGrams = kcalToGrams(lunchKcal);
   const gramsMap = buildTargetGramsMap(lunchGrams);
   runCompare(overReal, baseReal, annReal, sideReal, capReal, gramsMap);
 });
 
-/* load payload + local OWID data */
+/* init: load payload and local OWID, then populate UI */
 (async function init(){
   try { const raw = sessionStorage.getItem(SESSION_KEY); if (raw) payload = JSON.parse(raw); } catch(e){ payload=null; }
   if (payload) {
     (payload.positions||[]).forEach(item => {
       if (typeof item.gramsPerPortion !== 'number') item.gramsPerPortion = item.gramsPerPortion || (DEFAULT_GRAMS[item.id]||100);
-      if (!('grams' in item) || item.grams==null) item.grams = item.grams || 0;
-      if (item.gramsPerPortion && typeof item.grams === 'number'){ const rawf = item.grams / item.gramsPerPortion; item.fraction = Number(Math.max(0,Math.min(1,rawf)).toFixed(3)); } else item.fraction = item.fraction || 1;
+      if (!('grams' in item) || item.grams == null) item.grams = item.grams || 0;
+      if (item.gramsPerPortion && typeof item.grams === 'number') { const rawf = item.grams / item.gramsPerPortion; item.fraction = Number(Math.max(0, Math.min(1, rawf)).toFixed(3)); }
+      else item.fraction = item.fraction || 1;
     });
     renderBase(baseRec, sideRec);
     renderBase(baseReal, sideReal);
@@ -568,13 +558,6 @@ cmpRealityBtn.addEventListener('click', ()=> {
   await loadLocalOwid();
   populateCountrySelect();
 })();
-
-/* loadLocalOwid / populateCountrySelect reused from earlier code (omitted here for brevity) */
-/* For completeness we reinsert them below so this is a standalone file. */
-
-async function loadLocalOwid(){ latestKcalByCountry={}; try{ const [metaRes,csvRes] = await Promise.all([fetch(LOCAL_META), fetch(LOCAL_CSV)]); if(!metaRes.ok||!csvRes.ok) throw new Error('fetch failed'); const meta = await metaRes.json(); const csvText = await csvRes.text(); const parsed = parseCsv(csvText); const countryCol = parsed.header.find(h=>/country|entity|name/i.test(h))||parsed.header[0]; const yearCol = parsed.header.find(h=>/year/i.test(h))||parsed.header[1]; let valueCol=null; if(meta&&meta.variables&&Array.isArray(meta.variables)){ const candidate = meta.variables.find(v=>v.dataColumn||v.column||v.name); if(candidate) valueCol = candidate.dataColumn||candidate.column||candidate.name; } if(!valueCol){ const lc = parsed.header.map(h=>h.toLowerCase()); const candidates = ['daily supply of calories per person','daily-per-capita-caloric-supply','value','daily supply','calories']; for(const c of candidates){ const idx = lc.findIndex(h=>h.includes(c)); if(idx!==-1){ valueCol = parsed.header[idx]; break; } } } if(!valueCol && parsed.rows.length){ const sample = parsed.rows[0]; for(const k of Object.keys(sample)){ if(k===countryCol||k===yearCol) continue; const v = sample[k]; if(v!=='' && !isNaN(Number(v))){ valueCol = k; break; } } } const byCountry={}; parsed.rows.forEach(r=>{ const country = (r[countryCol]||'').trim(); const year = Number(r[yearCol]); const v = valueCol ? (r[valueCol]===''?NaN:Number(r[valueCol])) : NaN; if(!country||!year||isNaN(v)) return; if(!byCountry[country]) byCountry[country] = {}; byCountry[country][year] = v; }); COUNTRY_LIST.forEach(c=>{ const data = byCountry[c]; if(!data){ latestKcalByCountry[c]=null; return; } const yrs = Object.keys(data).map(Number).filter(y=>!isNaN(y)); if(!yrs.length){ latestKcalByCountry[c]=null; return; } const latest = Math.max(...yrs); latestKcalByCountry[c] = { year: latest, kcal: data[latest] }; }); return true; } catch(e){ console.error('OWID load error', e); COUNTRY_LIST.forEach(c=> latestKcalByCountry[c]=null); return false; } }
-function populateCountrySelect(){ countrySelect.innerHTML=''; COUNTRY_LIST.forEach(c=>{ const info = latestKcalByCountry[c]; const opt = document.createElement('option'); opt.value = c; opt.textContent = info && info.kcal ? `${c} — ${Math.round(info.kcal)} kcal/day (${info.year})` : `${c} — (no data)`; countrySelect.appendChild(opt); }); }
-
 </script>
 </body>
 </html>
