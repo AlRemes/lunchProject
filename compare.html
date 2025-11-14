@@ -50,6 +50,11 @@
     transform-origin:50% 50%;
     pointer-events:none; overflow:visible; border-radius:50%;
   }
+  .overlayFill{
+    position:absolute; left:50%; top:50%;
+    transform:translate(-50%,-50%); border-radius:50%;
+    pointer-events:none; box-sizing:border-box;
+  }
   .scaledSvg{position:absolute;left:0;top:0;width:100%;height:100%}
   .itemWrapper{position:absolute; transform:translate(-50%,-50%); pointer-events:none}
   .itemWrapper img{display:block;width:100%;height:100%;object-fit:contain}
@@ -95,7 +100,7 @@
           </div>
 
           <div>
-            <div class="caption" id="captionRecommended">Press Run Compare to scale the plate based on total calories (user plate vs recommended). Side items stay fixed; plate and on-plate items scale together. Ghost shows original items for comparison.</div>
+            <div class="caption" id="captionRecommended">Press Run Compare to scale the plate based on total calories (user plate vs recommended). Shrunk area is shown as a semi-transparent colored plate; growth still uses an outer annulus. Side items remain fixed and colored.</div>
           </div>
         </div>
       </div>
@@ -127,15 +132,12 @@
   </div>
 
 <script>
-/* Uses your provided SVG filenames for bread variants:
-   - images/cheese-bread.svg
-   - images/bread-with-butter.svg
-   - images/slice-of-bread.svg
-   Behavior:
-   - Plate (plate-area) is scaled with the items so annulus inner edge aligns with plate edge
-   - Ghost duplicates (grey) are shown behind the scaled items while comparing
-   - Each on-plate item scales around its own center
-   - Side items stay colored and do not scale; side column flips left/right depending on comparison
+/* Final compare.html with:
+ - plate-area scaled together with items so inner edge alignment is exact
+ - when shrink (scale < 1) draw a semi-transparent filled circle (overlayFill) representing the smaller plate area
+ - when grow (scale >= 1) draw green annulus border as before
+ - on-plate items scale around their own centers; side items remain fixed and colored
+ - friendly caption wording
 */
 
 const SESSION_KEY = 'plate_positions_fallback';
@@ -146,12 +148,11 @@ const CAL_PER_G = {
   orange: 0.47, milk: 0.64, water: 0.0
 };
 
-/* prefer explicit bread svg names you gave */
 const CATALOG_IMG = {
   potato: 'images/potato.svg',
   sausage: 'images/sausage.svg',
   carrot: 'images/carrot.svg',
-  bread_variant: 'images/cheese-bread.svg', /* prefer cheese bread by default */
+  bread_variant: 'images/cheese-bread.svg',
   bread_with_butter: 'images/bread-with-butter.svg',
   slice_of_bread: 'images/slice-of-bread.svg',
   bread: 'images/slice-of-bread.svg',
@@ -164,6 +165,7 @@ const DEFAULT_GRAMS = { potato:150, sausage:75, carrot:75, bread:40, bread_varia
 
 let payload = null;
 
+/* DOM refs */
 const baseRec = document.getElementById('baseRecommended');
 const annRec  = document.getElementById('annulusRecommended');
 const overRec = document.getElementById('overlayRecommended');
@@ -196,7 +198,7 @@ function computeSideSlots(canvasEl){
   return slots;
 }
 
-/* preserve incoming metadata (_imgOverride, grams, fraction, kcalPerPortion, sideSlot) */
+/* normalize payload but preserve _imgOverride, grams, fraction, kcalPerPortion, sideSlot */
 function normalizePayload(p){
   (p.positions || []).forEach(item => {
     if (typeof item.gramsPerPortion !== 'number') item.gramsPerPortion = item.gramsPerPortion || (DEFAULT_GRAMS[item.id] || 100);
@@ -217,6 +219,7 @@ function normalizePayload(p){
       item.kcalPerPortion = Math.round((item.gramsPerPortion || DEFAULT_GRAMS[item.id] || 100) * calpg);
     }
   });
+
   if (!('totalCalories' in p) || typeof p.totalCalories !== 'number') {
     p.totalCalories = totalCaloriesPayloadFromPositions(p.positions || []);
   } else {
@@ -224,7 +227,7 @@ function normalizePayload(p){
   }
 }
 
-/* Render base (original colored items and side column). Side items are colored and not scaled later. */
+/* Render base items (original user plate). Side items go to sideContainer and remain colored. */
 function renderBase(targetBase, sideContainer){
   targetBase.innerHTML = '';
   sideContainer.innerHTML = '';
@@ -272,10 +275,9 @@ function renderBase(targetBase, sideContainer){
   });
 }
 
-/* Helper to resolve bread variants and other images: prefer explicit ids or _imgOverride */
+/* Resolve image path for known ids and support _imgOverride */
 function resolveImage(p){
   if (p._imgOverride) return p._imgOverride;
-  // handle common bread naming variations
   if (p.id === 'bread_variant') return CATALOG_IMG.bread_variant;
   if (p.id === 'bread_with_butter') return CATALOG_IMG.bread_with_butter;
   if (p.id === 'slice_of_bread') return CATALOG_IMG.slice_of_bread;
@@ -283,7 +285,7 @@ function resolveImage(p){
   return 'images/' + (p.id || 'unknown') + '.svg';
 }
 
-/* Build overlay: ghostGroup (grey) + scaledGroup (colored). Only on-plate items included. */
+/* Build overlay: ghostGroup + scaledGroup (only on-plate items). */
 function buildOverlay(targetOverlay){
   targetOverlay.innerHTML = '';
   const container = document.createElement('div');
@@ -294,7 +296,6 @@ function buildOverlay(targetOverlay){
   const ghost = document.createElement('div'); ghost.className = 'ghostGroup';
   const scaled = document.createElement('div'); scaled.className = 'scaledGroup';
 
-  // add transparent svg circle to scaled for consistent circular clipping
   const svgNS = 'http://www.w3.org/2000/svg';
   const svg = document.createElementNS(svgNS,'svg');
   svg.setAttribute('viewBox','0 0 100 100');
@@ -382,28 +383,64 @@ function totalCaloriesPayload(){
   return Math.max(0, Math.round(totalCaloriesPayloadFromPositions(payload.positions || [])));
 }
 
-/* draw annulus aligned to plate edge: scale plate-area so inner edge matches */
+/*
+  New annulus/overlay behavior:
+  - If scale >= 1: draw green annulus border whose inner edge equals current plate edge (outer growth)
+  - If scale < 1: draw a semi-transparent filled circle (overlayFill) centered, with diameter = scaled plate diameter,
+    appearing as a smaller colored plate so items inside it read as the new target "plate".
+*/
 function drawAnnulus(node, scale){
   node.innerHTML = '';
   if (!scale || isNaN(scale)) return;
   const base = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--plate-diameter')) || 480;
   const scaled = Math.max(2, base * scale);
-  const ann = document.createElement('div');
-  ann.className = 'annulus';
+
   if (scale >= 1) {
+    // Growth: draw green annulus border outside current plate
+    const ann = document.createElement('div');
+    ann.className = 'annulus';
+    ann.style.position = 'absolute';
+    ann.style.left = '50%';
+    ann.style.top = '50%';
+    ann.style.transform = 'translate(-50%,-50%)';
+    ann.style.boxSizing = 'border-box';
     const outer = scaled;
-    const thick = Math.max(4, (scaled - base) / 2);
-    ann.style.width = outer + 'px'; ann.style.height = outer + 'px';
-    ann.style.border = `${thick}px solid limegreen`; ann.style.boxSizing = 'border-box'; ann.style.opacity = 0.95;
+    const thickness = Math.max(4, (scaled - base) / 2);
+    ann.style.width = outer + 'px';
+    ann.style.height = outer + 'px';
+    ann.style.border = `${thickness}px solid rgba(88, 196, 104, 0.95)`; // green
+    node.appendChild(ann);
   } else {
-    const outer = base;
-    const thick = Math.max(4, (base - scaled) / 2);
-    ann.style.width = outer + 'px'; ann.style.height = outer + 'px';
-    ann.style.border = `${thick}px solid tomato`; ann.style.boxSizing = 'border-box'; ann.style.opacity = 0.95;
+    // Shrink: create a filled semi-transparent "mini-plate" that sits centered
+    const fill = document.createElement('div');
+    fill.className = 'overlayFill';
+    fill.style.width = scaled + 'px';
+    fill.style.height = scaled + 'px';
+    fill.style.background = 'rgba(220, 70, 70, 0.22)'; // soft red translucent fill
+    fill.style.border = `1px solid rgba(220,70,70,0.28)`; // slight border for definition
+    fill.style.left = '50%';
+    fill.style.top = '50%';
+    fill.style.transform = 'translate(-50%,-50%)';
+    node.appendChild(fill);
+
+    // Additionally draw a subtle outer ring to hint difference (thin darker rim)
+    const rim = document.createElement('div');
+    rim.className = 'annulus';
+    rim.style.position = 'absolute';
+    rim.style.left = '50%';
+    rim.style.top = '50%';
+    rim.style.transform = 'translate(-50%,-50%)';
+    rim.style.boxSizing = 'border-box';
+    const outerBase = base;
+    const thickness = Math.max(2, (base - scaled) / 2);
+    rim.style.width = outerBase + 'px';
+    rim.style.height = outerBase + 'px';
+    rim.style.border = `${thickness}px solid rgba(220,70,70,0.18)`;
+    node.appendChild(rim);
   }
-  node.appendChild(ann);
 }
 
+/* compute scale and clamp */
 function computeScaleFromCalories(targetMap){
   const actual = Math.max(1, totalCaloriesPayload());
   const target = Math.max(0, totalCaloriesFromMap(targetMap || {}));
@@ -411,18 +448,14 @@ function computeScaleFromCalories(targetMap){
   return Math.max(0.12, Math.min(3.0, Math.sqrt(target / actual)));
 }
 
+/* place side column left/right */
 function placeSideColumn(sideContainer, toRight){
   if (!sideContainer) return;
   sideContainer.classList.remove('left');
   if (!toRight) sideContainer.classList.add('left');
 }
 
-/* Run comparison:
-   - build overlay (ghost + scaled)
-   - scale plate-area element (so plate background shrinks/grows)
-   - scale each on-plate item around its own center
-   - keep side items colored and optionally flip side column left/right depending on target vs actual
-*/
+/* Run comparison: show ghost, scale plate-area, scale each on-plate item around its own center, draw overlay/annulus */
 function runCompare(targetOverlay, targetBase, annNode, sideContainer, captionEl, targetMap, title){
   if (!payload) { alert('No saved plate'); return; }
 
@@ -430,26 +463,26 @@ function runCompare(targetOverlay, targetBase, annNode, sideContainer, captionEl
   annNode.innerHTML = '';
   sideContainer.innerHTML = '';
 
-  // render static side items (colored)
+  // render colored side items
   renderSideOnly(sideContainer, targetBase);
 
   buildOverlay(targetOverlay);
 
   const scale = computeScaleFromCalories(targetMap);
 
-  // hide original on-plate items (we show ghost + scaled overlay)
+  // hide base on-plate items (they are visible as ghost behind)
   Array.from(targetBase.querySelectorAll('.itemWrapper')).forEach(el => {
     if (el.dataset.onplate === '1') el.classList.add('hidden-onplate');
   });
 
-  // scale plate-area so plate itself grows/shrinks
+  // scale plate-area so plate itself resizes visually
   const plateArea = targetBase.querySelector('.plate-area');
   if (plateArea) {
     plateArea.style.transition = 'transform 700ms cubic-bezier(.2,.9,.2,1)';
     requestAnimationFrame(()=> plateArea.style.transform = `translate(-50%,-50%) scale(${scale})`);
   }
 
-  // draw annulus aligned to the visible plate
+  // draw semi-transparent fill or annulus depending on growth/shrink
   drawAnnulus(annNode, scale);
 
   // scale each on-plate item around its center
@@ -467,12 +500,15 @@ function runCompare(targetOverlay, targetBase, annNode, sideContainer, captionEl
   const targetCal = Math.round(totalCaloriesFromMap(targetMap || {}));
   placeSideColumn(sideContainer, targetCal >= actualCal);
 
+  // friendly caption text
   setTimeout(()=> {
     let diffPct = 0;
     if (actualCal > 0) diffPct = Math.round(((targetCal - actualCal) / actualCal) * 100);
     else diffPct = targetCal > 0 ? 100 : 0;
-    const sign = diffPct > 0 ? '+' : '';
-    captionEl.textContent = `${title || ''}: ${sign}${diffPct}% difference`;
+
+    if (diffPct < 0) captionEl.textContent = `Recommendation is ${Math.abs(diffPct)}% lower than your plate`;
+    else if (diffPct > 0) captionEl.textContent = `Recommendation is ${diffPct}% higher than your plate`;
+    else captionEl.textContent = 'Recommendation matches your plate';
   }, 800);
 }
 
@@ -495,7 +531,7 @@ function renderSideOnly(sideContainer, targetBase){
   });
 }
 
-/* Clear comparison (remove ghost and scaled overlay, reset plate scale, show originals) */
+/* Clear comparison: remove overlay, reset plate scale, restore originals and caption */
 function clearCompare(targetOverlay, targetBase, annNode, sideContainer, captionEl){
   targetOverlay.innerHTML = '';
   annNode.innerHTML = '';
@@ -511,17 +547,52 @@ function clearCompare(targetOverlay, targetBase, annNode, sideContainer, caption
   captionEl.textContent = 'Comparison cleared. Template remains colored.';
 }
 
-/* recommended mapping helper */
-function portionsToGramsMap(portions){
-  const g = {};
-  Object.keys(portions||{}).forEach(id => {
-    const per = DEFAULT_GRAMS[id] || 100;
-    g[id] = (portions[id] || 0) * per;
+/* helpers */
+function totalCaloriesFromMap(map){
+  let sum = 0;
+  Object.keys(map || {}).forEach(id => {
+    const grams = map[id] || 0;
+    const calPerG = CAL_PER_G[id] !== undefined ? CAL_PER_G[id] : 0.8;
+    sum += grams * calPerG;
   });
-  return g;
+  return sum;
 }
-const recommendedPortions = { carrot:2, apple:1, potato:1, bread_variant:0, sausage:1, milk:1, water:1 };
-const recommendedGrams = portionsToGramsMap(recommendedPortions);
+function totalCaloriesPayloadFromPositions(positions){
+  return (positions || []).reduce((s,p) => {
+    if (typeof p.kcalPerPortion === 'number' && typeof p.gramsPerPortion === 'number' && p.gramsPerPortion > 0) {
+      const calPerG = (p.kcalPerPortion / p.gramsPerPortion);
+      return s + (p.grams || 0) * calPerG;
+    }
+    const calPerG = CAL_PER_G[p.id] !== undefined ? CAL_PER_G[p.id] : 0.8;
+    return s + (p.grams || 0) * calPerG;
+  }, 0);
+}
+function totalCaloriesPayload(){
+  if (payload && typeof payload.totalCalories === 'number') return Math.max(0, Math.round(payload.totalCalories));
+  return Math.max(0, Math.round(totalCaloriesPayloadFromPositions(payload.positions || [])));
+}
+
+function resolveImage(p){
+  if (p._imgOverride) return p._imgOverride;
+  if (p.id === 'bread_variant') return CATALOG_IMG.bread_variant;
+  if (p.id === 'bread_with_butter') return CATALOG_IMG.bread_with_butter;
+  if (p.id === 'slice_of_bread') return CATALOG_IMG.slice_of_bread;
+  if (p.id && CATALOG_IMG[p.id]) return CATALOG_IMG[p.id];
+  return 'images/' + (p.id || 'unknown') + '.svg';
+}
+
+function computeScaleFromCalories(targetMap){
+  const actual = Math.max(1, totalCaloriesPayload());
+  const target = Math.max(0, totalCaloriesFromMap(targetMap || {}));
+  if (target <= 0) return 0.001;
+  return Math.max(0.12, Math.min(3.0, Math.sqrt(target / actual)));
+}
+
+function placeSideColumn(sideContainer, toRight){
+  if (!sideContainer) return;
+  sideContainer.classList.remove('left');
+  if (!toRight) sideContainer.classList.add('left');
+}
 
 /* UI wiring */
 document.getElementById('backBtn').addEventListener('click', ()=> history.back());
@@ -529,12 +600,17 @@ document.getElementById('resetAllBtn').addEventListener('click', ()=> {
   clearCompare(overRec, baseRec, annRec, sideRec, capRec);
   clearCompare(overReal, baseReal, annReal, sideReal, capReal);
 });
-document.getElementById('cmpRecommendedBtn').addEventListener('click', ()=> runCompare(overRec, baseRec, annRec, sideRec, capRec, recommendedGrams, 'Recommended (Finland) vs Estimate'));
+
+document.getElementById('cmpRecommendedBtn').addEventListener('click', ()=> {
+  const recommendedMap = { carrot: 150, apple: 150, potato: 150, bread_variant: 0, sausage: 75, milk: 250, water: 0 };
+  runCompare(overRec, baseRec, annRec, sideRec, capRec, recommendedMap, 'Recommended (Finland) vs Estimate');
+});
 document.getElementById('clearRecommendedBtn').addEventListener('click', ()=> clearCompare(overRec, baseRec, annRec, sideRec, capRec));
+
 document.getElementById('cmpRealityBtn').addEventListener('click', ()=> {
   const raw = prompt('Enter target grams JSON mapping (e.g. { "potato": 200, "apple": 100 }) — leave empty to use recommended');
   let target = null;
-  if (!raw) target = recommendedGrams;
+  if (!raw) target = { carrot: 150, apple: 150, potato: 150, bread_variant: 0, sausage: 75, milk: 250, water: 0 };
   else {
     try { target = JSON.parse(raw); } catch(e){ alert('Invalid JSON'); return; }
   }
