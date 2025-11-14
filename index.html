@@ -145,7 +145,8 @@ function makeFoodTile(item) {
     const opts = document.createElement('div');
     opts.style.marginTop = '6px';
     opts.innerHTML = `
-      <button data-action="addCheese" style="padding:4px 8px;border-radius:4px;margin-right:6px">Add cheese and butter</button>
+      <button data-action="addButter" style="padding:4px 8px;border-radius:4px;margin-right:6px">Add butter</button>
+      <button data-action="addCheese" style="padding:4px 8px;border-radius:4px;margin-right:6px">Add cheese</button>
     `;
     el.appendChild(opts);
 
@@ -448,4 +449,3 @@ updateSummary();
 
 </body>
 </html>
-
