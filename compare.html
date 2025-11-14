@@ -2,14 +2,11 @@
 <html>
 <head>
 <meta charset="utf-8"/>
-<title>Compare Plate — scale by total calories (with global reality)</title>
+<title>Compare Plate — scale by total calories (with OWID reality)</title>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <style>
-  :root {
-    --plate-wrapper-size: 520px;
-    --plate-diameter: 480px;
-  }
-  body{font-family:Arial,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;margin:14px;background:#f6f6f7;color:#222}
+  :root { --plate-wrapper-size:520px; --plate-diameter:480px; }
+  body{font-family:Arial,system-ui,-apple-system,Segoe UI,Roboto;margin:14px;background:#f6f6f7;color:#222}
   .page{max-width:1200px;margin:0 auto}
   .topbar{display:flex;gap:12px;align-items:center;justify-content:space-between;margin-bottom:12px}
   .btn{padding:8px 12px;border-radius:6px;border:1px solid #bbb;background:#fff;cursor:pointer}
@@ -29,10 +26,11 @@
     box-sizing:border-box;
     border-radius:50%;
   }
-  .layer{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none}
+  .layer{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;box-sizing:border-box}
   .sideColumn{position:absolute;top:14px;right:18px;display:flex;flex-direction:column;gap:10px;pointer-events:none}
   .sideColumn.left{right:auto;left:18px}
   .sideItem{width:86px;height:86px;display:flex;align-items:center;justify-content:center}
+  /* plate-area is the element we scale; we will size annulus to match this element's computed size */
   .plate-area {
     position:absolute;
     left:50%; top:50%;
@@ -42,13 +40,14 @@
     border-radius:50%;
     pointer-events:none;
     background:transparent;
+    box-sizing:border-box;
   }
   .ghostGroup, .scaledGroup{
     position:absolute; left:50%; top:50%;
     width:var(--plate-diameter); height:var(--plate-diameter);
     transform:translate(-50%,-50%) scale(1);
     transform-origin:50% 50%;
-    pointer-events:none; overflow:visible; border-radius:50%;
+    pointer-events:none; overflow:visible; border-radius:50%; box-sizing:border-box;
   }
   .overlayFill{
     position:absolute; left:50%; top:50%;
@@ -68,10 +67,7 @@
   .controlsRow{display:flex;gap:8px;align-items:center}
   select.countrySelect{padding:6px;border-radius:6px;border:1px solid #ccc;background:#fff}
   .note{font-size:12px;color:#666;margin-top:6px}
-  @media (max-width:1000px){
-    :root{ --plate-wrapper-size:420px; --plate-diameter:380px; }
-    .sideColumn{right:12px}
-  }
+  @media (max-width:1000px){ :root{ --plate-wrapper-size:420px; --plate-diameter:380px; } .sideColumn{right:12px} }
 </style>
 </head>
 <body>
@@ -131,7 +127,7 @@
           </div>
 
           <div>
-            <div class="caption" id="captionReality">Select a country (data from Our World in Data) and click Compare. The daily calories per person (latest year) are divided by 3 to approximate a lunch-sized target and used to build a comparison plate automatically.</div>
+            <div class="caption" id="captionReality">Select a country (data from Our World in Data) and click Compare. Daily kcal (latest year) are divided by 3 for a lunch estimate and used to build a comparison plate.</div>
             <div class="note">Countries included: Finland, Sweden, Norway, Denmark, United States, Canada, Brazil, Argentina, Chile, China, India, Japan, Indonesia, Australia, New Zealand, Nigeria, Ethiopia, Kenya, South Africa, Egypt, Morocco</div>
           </div>
         </div>
@@ -141,54 +137,31 @@
 
 <script>
 /*
-  Updated compare.html — now includes:
-   - fetch of Our World in Data daily-per-capita-caloric-supply CSV
-   - builds a country list (scandinavia, americas, asia, oceania, south america, several african countries)
-   - computes lunch estimate = daily kcal / 3 (latest available year)
-   - converts lunch kcal -> grams using avgKcalPerGram
-   - builds a simple target grams map and runs the existing runCompare() against the second panel
-   - preserves previous visual compare behaviour
+  Key fixes in this file:
+   - Use OWID grapher JSON endpoint (grapher/<slug>.json) to fetch per-country timeseries with CORS-friendly response.
+   - Robustly extract the latest year value per country and populate the select.
+   - Annulus sizing: compute scaled diameter from the same base (--plate-diameter) and always draw annulus/mini-plate at the same transform origin so edges align.
+   - Keep compare visuals (ghost vs scaled).
 */
 
+/* CONFIG */
 const SESSION_KEY = 'plate_positions_fallback';
-const OWID_CSV = 'https://ourworldindata.org/grapher/daily-per-capita-caloric-supply.csv';
+const OWID_JSON_URL = 'https://ourworldindata.org/grapher/daily-per-capita-caloric-supply.json'; // grapher JSON endpoint
 
-const CAL_PER_G = {
-  potato: 0.77, sausage: 2.5, carrot: 0.41,
-  bread_variant: 2.5, bread: 2.5, apple: 0.52,
-  orange: 0.47, milk: 0.64, water: 0.0
-};
-
+const CAL_PER_G = { potato:0.77, sausage:2.5, carrot:0.41, bread_variant:2.5, bread:2.5, apple:0.52, orange:0.47, milk:0.64, water:0.0 };
 const CATALOG_IMG = {
-  potato: 'images/potato.svg',
-  sausage: 'images/sausage.svg',
-  carrot: 'images/carrot.svg',
-  bread_variant: 'images/cheese-bread.svg',
-  bread_with_butter: 'images/bread-with-butter.svg',
-  slice_of_bread: 'images/slice-of-bread.svg',
-  bread: 'images/slice-of-bread.svg',
-  apple: 'images/apple.svg',
-  milk: 'images/milk-carton.svg',
-  water: 'images/glass-of-water.svg'
+  potato:'images/potato.svg', sausage:'images/sausage.svg', carrot:'images/carrot.svg',
+  bread_variant:'images/cheese-bread.svg', bread_with_butter:'images/bread-with-butter.svg',
+  slice_of_bread:'images/slice-of-bread.svg', bread:'images/slice-of-bread.svg',
+  apple:'images/apple.svg', milk:'images/milk-carton.svg', water:'images/glass-of-water.svg'
 };
-
 const DEFAULT_GRAMS = { potato:150, sausage:75, carrot:75, bread:40, bread_variant:40, apple:150, milk:250, water:200 };
+const COUNTRY_LIST = ["Finland","Sweden","Norway","Denmark","United States","Canada","Brazil","Argentina","Chile","China","India","Japan","Indonesia","Australia","New Zealand","Nigeria","Ethiopia","Kenya","South Africa","Egypt","Morocco"];
 
-/* countries we will expose */
-const COUNTRY_LIST = [
-  "Finland","Sweden","Norway","Denmark",
-  "United States","Canada",
-  "Brazil","Argentina","Chile",
-  "China","India","Japan","Indonesia",
-  "Australia","New Zealand",
-  "Nigeria","Ethiopia","Kenya","South Africa","Egypt",
-  "Morocco"
-];
+let payload = null;
+let latestKcalByCountry = {}; // { country: { year, value } }
 
-let owidDataByCountry = {}; // { country: { year: kcal, ... }, ... }
-let latestKcalByCountry = {}; // { country: latestKcal }
-
-// DOM refs
+/* DOM refs */
 const countrySelect = document.getElementById('countrySelect');
 const cmpRealityBtn = document.getElementById('cmpRealityBtn');
 const clearRealityBtn = document.getElementById('clearRealityBtn');
@@ -205,82 +178,11 @@ const overReal = document.getElementById('overlayReality');
 const sideReal = document.getElementById('sideReal');
 const capReal  = document.getElementById('captionReality');
 
-let payload = null;
+/* UTILITIES */
+function escapeAttr(s){ return String(s||'').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function resolveImage(p){ if (p._imgOverride) return p._imgOverride; if (p.id === 'bread_variant') return CATALOG_IMG.bread_variant; if (p.id && CATALOG_IMG[p.id]) return CATALOG_IMG[p.id]; return 'images/' + (p.id || 'unknown') + '.svg'; }
 
-/* Utilities to parse CSV (simple, small parser) */
-function parseCsv(text){
-  const lines = text.split(/\r?\n/).filter(Boolean);
-  if (lines.length === 0) return [];
-  const header = lines[0].split(',');
-  const rows = [];
-  for (let i=1;i<lines.length;i++){
-    const line = lines[i];
-    // naive CSV split (OWID CSV uses simple values)
-    const cols = line.split(',');
-    if (cols.length !== header.length) continue;
-    const obj = {};
-    for (let j=0;j<header.length;j++){
-      obj[header[j]] = cols[j];
-    }
-    rows.push(obj);
-  }
-  return { header, rows };
-}
-
-/* Load OWID CSV and populate latestKcalByCountry for our COUNTRY_LIST */
-async function fetchOwid(){
-  try {
-    const res = await fetch(OWID_CSV);
-    if (!res.ok) throw new Error('CSV fetch failed ' + res.status);
-    const txt = await res.text();
-    const parsed = parseCsv(txt);
-    // CSV columns: country, year, total (or value) — inspect header names
-    const hdr = parsed.header;
-    const rows = parsed.rows;
-    // find the value column (commonly "Daily supply of calories per person")
-    // Inspect headers; typical grapher CSV has column names like "Country","Year","Daily supply of calories per person"
-    // We'll locate the numeric column that's not "country" or "year"
-    const valCol = hdr.find(h => !['country','Year','year','Country','Entity'].includes(h));
-    rows.forEach(r => {
-      const country = r['country'] || r['Country'] || r['Entity'] || r['entity'] || '';
-      const year = Number(r['year'] || r['Year'] || '');
-      const v = Number(r[valCol]);
-      if (!country || isNaN(year) || isNaN(v)) return;
-      if (!owidDataByCountry[country]) owidDataByCountry[country] = {};
-      owidDataByCountry[country][year] = v;
-    });
-
-    // build latestKcalByCountry for our COUNTRY_LIST
-    COUNTRY_LIST.forEach(c => {
-      const data = owidDataByCountry[c];
-      if (!data) { latestKcalByCountry[c] = null; return; }
-      const years = Object.keys(data).map(Number).filter(y => !isNaN(y));
-      if (years.length === 0){ latestKcalByCountry[c] = null; return; }
-      const latestYear = Math.max(...years);
-      latestKcalByCountry[c] = { year: latestYear, kcal: data[latestYear] };
-    });
-  } catch (e) {
-    console.warn('Failed to fetch OWID CSV', e);
-    // fallback: keep latestKcalByCountry empty
-    COUNTRY_LIST.forEach(c => latestKcalByCountry[c] = null);
-  }
-}
-
-/* Fill country select with readable labels and (kcal/year) info when available */
-function populateCountrySelect(){
-  countrySelect.innerHTML = '';
-  COUNTRY_LIST.forEach(c => {
-    const info = latestKcalByCountry[c];
-    const label = info && info.kcal ? `${c} — ${Math.round(info.kcal)} kcal/day (${info.year})` : `${c} — (no data)`;
-    const opt = document.createElement('option');
-    opt.value = c;
-    opt.textContent = label;
-    countrySelect.appendChild(opt);
-  });
-}
-
-/* Helpers re-using existing compare code (simplified duplicates included here) */
-
+/* compute side slots for side column */
 function computeSideSlots(canvasEl){
   const rect = canvasEl.getBoundingClientRect();
   const plateDiameter = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--plate-diameter')) || 480;
@@ -289,271 +191,130 @@ function computeSideSlots(canvasEl){
   const columnX = Math.min(rect.width - 30, Math.round(plateRight + gap));
   const startY = 40;
   const spacing = 18 + 86;
-  const slots = [];
-  const max = Math.max(4, Math.floor((rect.height - startY - 20) / spacing));
+  const slots = []; const max = Math.max(4, Math.floor((rect.height - startY - 20) / spacing));
   for (let i=0;i<max;i++) slots.push({ x: columnX, y: startY + i * spacing });
   return slots;
 }
 
-function escapeAttr(s){ return String(s||'').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-
-function resolveImage(p){
-  if (p._imgOverride) return p._imgOverride;
-  if (p.id === 'bread_variant') return CATALOG_IMG.bread_variant;
-  if (p.id === 'bread_with_butter') return CATALOG_IMG.bread_with_butter;
-  if (p.id === 'slice_of_bread') return CATALOG_IMG.slice_of_bread;
-  if (p.id && CATALOG_IMG[p.id]) return CATALOG_IMG[p.id];
-  return 'images/' + (p.id || 'unknown') + '.svg';
-}
-
-/* Render base (original items) */
+/* RENDERING: base/overlay/annulus are adapted versions of prior code but with box-sizing-consistent annulus sizing */
 function renderBase(targetBase, sideContainer){
-  targetBase.innerHTML = '';
-  sideContainer.innerHTML = '';
-
+  targetBase.innerHTML = ''; sideContainer.innerHTML = '';
   const plateArea = document.createElement('div');
   plateArea.className = 'plate-area';
   plateArea.style.background = 'transparent';
   targetBase.appendChild(plateArea);
-
   const slots = computeSideSlots(targetBase.parentElement);
-
   (payload.positions || []).forEach(p => {
     if (p.placement === 'side') {
       const idx = (typeof p.sideSlot === 'number') ? p.sideSlot : 0;
       const chosen = slots[Math.min(idx, slots.length-1)] || {x:targetBase.parentElement.clientWidth-100,y:40};
-      const si = document.createElement('div');
-      si.className = 'sideItem';
-      si.style.position = 'absolute';
-      si.style.left = (chosen.x - 40) + 'px';
-      si.style.top = (chosen.y - 20) + 'px';
+      const si = document.createElement('div'); si.className='sideItem'; si.style.position='absolute';
+      si.style.left = (chosen.x - 40) + 'px'; si.style.top = (chosen.y - 20) + 'px';
       const src = p._imgOverride || resolveImage(p);
       si.innerHTML = `<img src="${escapeAttr(src)}" alt="${escapeAttr(p.label||p.id||'')}" style="width:100%;height:100%;object-fit:contain">`;
-      sideContainer.appendChild(si);
-      return;
+      sideContainer.appendChild(si); return;
     }
-
-    const w = document.createElement('div');
-    w.className = 'itemWrapper';
-    w.dataset.onplate = '1';
-    w.style.position = 'absolute';
-    w.style.left = (p.x||0) + 'px';
-    w.style.top = (p.y||0) + 'px';
-    w.style.width = (p.sizePx||48) + 'px';
-    w.style.height = (p.sizePx||48) + 'px';
+    const w = document.createElement('div'); w.className='itemWrapper'; w.dataset.onplate='1';
+    w.style.position='absolute'; w.style.left=(p.x||0)+'px'; w.style.top=(p.y||0)+'px';
+    w.style.width=(p.sizePx||48)+'px'; w.style.height=(p.sizePx||48)+'px';
     w.style.transform = `translate(-50%,-50%) rotate(${p.rotationDeg||0}deg)`;
-    const img = document.createElement('img');
-    img.src = p._imgOverride || resolveImage(p);
-    img.alt = p.label || p.id || '';
-    img.classList.remove('clip-half'); img.style.transform = '';
+    const img = document.createElement('img'); img.src = p._imgOverride || resolveImage(p); img.alt = p.label||p.id||'';
     const frac = (typeof p.fraction === 'number') ? p.fraction : 1;
     if (Math.abs(frac - 0.5) < 0.001) img.classList.add('clip-half');
     else if (frac < 0.5) img.style.transform = `scale(${Math.max(0.25, Math.min(1, frac))})`;
-    w.appendChild(img);
-    targetBase.appendChild(w);
+    w.appendChild(img); targetBase.appendChild(w);
   });
 }
 
-/* Build overlay (ghost + scaled) */
+/* overlay builder: ghost (grey), ghost-inner (faint), scaled (colored) */
 function buildOverlay(targetOverlay){
   targetOverlay.innerHTML = '';
-  const container = document.createElement('div');
-  container.className = 'scaledContainer';
-  container.style.position='absolute'; container.style.left='0'; container.style.top='0';
-  container.style.width='100%'; container.style.height='100%';
-
-  const ghost = document.createElement('div'); ghost.className = 'ghostGroup';
-  const ghostInnerLayer = document.createElement('div'); ghostInnerLayer.className = 'ghostGroup ghost-inner-group';
-  const scaled = document.createElement('div'); scaled.className = 'scaledGroup';
-
+  const container = document.createElement('div'); container.className='scaledContainer';
+  container.style.position='absolute'; container.style.left='0'; container.style.top='0'; container.style.width='100%'; container.style.height='100%';
+  const ghost = document.createElement('div'); ghost.className='ghostGroup';
+  const ghostInner = document.createElement('div'); ghostInner.className='ghostGroup ghost-inner-group';
+  const scaled = document.createElement('div'); scaled.className='scaledGroup';
   const svgNS = 'http://www.w3.org/2000/svg';
-  const svg = document.createElementNS(svgNS,'svg');
-  svg.setAttribute('viewBox','0 0 100 100');
-  svg.setAttribute('preserveAspectRatio','xMidYMid meet');
-  svg.className = 'scaledSvg';
+  const svg = document.createElementNS(svgNS,'svg'); svg.setAttribute('viewBox','0 0 100 100');
+  svg.setAttribute('preserveAspectRatio','xMidYMid meet'); svg.className='scaledSvg';
   svg.style.position='absolute'; svg.style.left='0'; svg.style.top='0'; svg.style.width='100%'; svg.style.height='100%';
-  const circle = document.createElementNS(svgNS,'circle');
-  circle.setAttribute('cx','50'); circle.setAttribute('cy','50'); circle.setAttribute('r','49.5');
-  circle.setAttribute('fill','transparent'); circle.setAttribute('stroke','transparent');
-  svg.appendChild(circle);
-  scaled.appendChild(svg);
+  const circle = document.createElementNS(svgNS,'circle'); circle.setAttribute('cx','50'); circle.setAttribute('cy','50'); circle.setAttribute('r','49.5');
+  circle.setAttribute('fill','transparent'); circle.setAttribute('stroke','transparent'); svg.appendChild(circle); scaled.appendChild(svg);
 
   (payload.positions || []).forEach(p => {
     if (p.placement !== 'onplate') return;
-
-    // ghost (grey original)
-    const gw = document.createElement('div');
-    gw.className = 'itemWrapper';
-    gw.style.position = 'absolute';
-    gw.style.left = (p.x||0) + 'px';
-    gw.style.top  = (p.y||0) + 'px';
-    gw.style.width = (p.sizePx||48) + 'px';
-    gw.style.height = (p.sizePx||48) + 'px';
+    // ghost
+    const gw = document.createElement('div'); gw.className='itemWrapper';
+    gw.style.position='absolute'; gw.style.left=(p.x||0)+'px'; gw.style.top=(p.y||0)+'px';
+    gw.style.width=(p.sizePx||48)+'px'; gw.style.height=(p.sizePx||48)+'px';
     gw.style.transform = `translate(-50%,-50%) rotate(${p.rotationDeg||0}deg)`;
-    const gimg = document.createElement('img');
-    gimg.src = p._imgOverride || resolveImage(p);
-    gimg.alt = p.label || p.id || '';
-    gimg.className = 'ghost-img';
-    const gfrac = (typeof p.fraction === 'number') ? p.fraction : 1;
-    if (Math.abs(gfrac - 0.5) < 0.001) gimg.classList.add('clip-half');
-    else if (gfrac < 0.5) gimg.style.transform = `scale(${Math.max(0.25, Math.min(1, gfrac))})`;
-    gw.appendChild(gimg);
-    ghost.appendChild(gw);
-
-    // ghost-inner (faint inner grey)
-    const giw = document.createElement('div');
-    giw.className = 'itemWrapper';
-    giw.style.position = 'absolute';
-    giw.style.left = (p.x||0) + 'px';
-    giw.style.top  = (p.y||0) + 'px';
-    giw.style.width = (p.sizePx||48) + 'px';
-    giw.style.height = (p.sizePx||48) + 'px';
+    const gimg = document.createElement('img'); gimg.src=p._imgOverride||resolveImage(p); gimg.alt=p.label||p.id||'';
+    gimg.className='ghost-img'; gw.appendChild(gimg); ghost.appendChild(gw);
+    // ghost-inner (slightly smaller)
+    const giw = document.createElement('div'); giw.className='itemWrapper';
+    giw.style.position='absolute'; giw.style.left=(p.x||0)+'px'; giw.style.top=(p.y||0)+'px';
+    giw.style.width=(p.sizePx||48)+'px'; giw.style.height=(p.sizePx||48)+'px';
     giw.style.transform = `translate(-50%,-50%) rotate(${p.rotationDeg||0}deg) scale(0.86)`;
-    const giimg = document.createElement('img');
-    giimg.src = p._imgOverride || resolveImage(p);
-    giimg.alt = p.label || p.id || '';
-    giimg.className = 'ghost-inner';
-    if (Math.abs(gfrac - 0.5) < 0.001) giimg.classList.add('clip-half');
-    giw.appendChild(giimg);
-    ghostInnerLayer.appendChild(giw);
-
-    // scaled (recommendation)
-    const sw = document.createElement('div');
-    sw.className = 'itemWrapper';
-    sw.style.position = 'absolute';
-    sw.style.left = (p.x||0) + 'px';
-    sw.style.top  = (p.y||0) + 'px';
-    sw.style.width = (p.sizePx||48) + 'px';
-    sw.style.height = (p.sizePx||48) + 'px';
-    sw.dataset.rotate = (p.rotationDeg||0);
-    sw.style.transform = `translate(-50%,-50%) rotate(${p.rotationDeg||0}deg) scale(1)`;
-    const simg = document.createElement('img');
-    simg.src = p._imgOverride || resolveImage(p);
-    simg.alt = p.label || p.id || '';
-    simg.className = 'scaled-img';
-    const sfrac = (typeof p.fraction === 'number') ? p.fraction : 1;
-    if (Math.abs(sfrac - 0.5) < 0.001) simg.classList.add('clip-half');
-    else if (sfrac < 0.5) simg.style.transform = `scale(${Math.max(0.25, Math.min(1, sfrac))})`;
-    sw.appendChild(simg);
-    scaled.appendChild(sw);
+    const giimg = document.createElement('img'); giimg.src=p._imgOverride||resolveImage(p); giimg.alt=p.label||p.id||'';
+    giimg.className='ghost-inner'; giw.appendChild(giimg); ghostInner.appendChild(giw);
+    // scaled
+    const sw = document.createElement('div'); sw.className='itemWrapper';
+    sw.style.position='absolute'; sw.style.left=(p.x||0)+'px'; sw.style.top=(p.y||0)+'px';
+    sw.style.width=(p.sizePx||48)+'px'; sw.style.height=(p.sizePx||48)+'px';
+    sw.dataset.rotate = (p.rotationDeg||0); sw.style.transform = `translate(-50%,-50%) rotate(${p.rotationDeg||0}deg) scale(1)`;
+    const simg = document.createElement('img'); simg.src=p._imgOverride||resolveImage(p); simg.alt=p.label||p.id||'';
+    simg.className='scaled-img'; sw.appendChild(simg); scaled.appendChild(sw);
   });
 
-  container.appendChild(ghost);
-  container.appendChild(ghostInnerLayer);
-  container.appendChild(scaled);
+  container.appendChild(ghost); container.appendChild(ghostInner); container.appendChild(scaled);
   targetOverlay.appendChild(container);
-  targetOverlay._ghost = ghost;
-  targetOverlay._ghostInner = ghostInnerLayer;
-  targetOverlay._scaled = scaled;
+  targetOverlay._ghost = ghost; targetOverlay._ghostInner = ghostInner; targetOverlay._scaled = scaled;
 }
 
-/* Draw annulus/fill */
+/* Draw annulus or filled mini-plate. Important: sizes are computed from the same CSS variable (--plate-diameter)
+   and we explicitly set box-sizing:border-box so border thickness doesn't inflate the perceived outer size.
+*/
 function drawAnnulus(node, scale){
   node.innerHTML = '';
   if (!scale || isNaN(scale)) return;
   const base = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--plate-diameter')) || 480;
-  const scaled = Math.max(2, base * scale);
+  const scaled = Math.max(2, Math.round(base * scale));
 
   if (scale >= 1) {
-    const ann = document.createElement('div');
-    ann.className = 'annulus';
-    ann.style.position = 'absolute';
-    ann.style.left = '50%';
-    ann.style.top = '50%';
-    ann.style.transform = 'translate(-50%,-50%)';
-    ann.style.boxSizing = 'border-box';
+    // Growth: annulus outside the current plate; thickness computed so inner edge aligns with plate
+    const ann = document.createElement('div'); ann.className='annulus';
+    ann.style.position='absolute'; ann.style.left='50%'; ann.style.top='50%'; ann.style.transform='translate(-50%,-50%)';
+    ann.style.boxSizing='border-box';
     const outer = scaled;
-    const thickness = Math.max(4, (scaled - base) / 2);
-    ann.style.width = outer + 'px';
-    ann.style.height = outer + 'px';
-    ann.style.border = `${thickness}px solid rgba(88, 196, 104, 0.95)`;
+    const thickness = Math.max(4, Math.round((scaled - base) / 2));
+    ann.style.width = outer + 'px'; ann.style.height = outer + 'px';
+    ann.style.border = `${thickness}px solid rgba(88,196,104,0.95)`;
     node.appendChild(ann);
   } else {
-    const fill = document.createElement('div');
-    fill.className = 'overlayFill';
-    fill.style.width = scaled + 'px';
-    fill.style.height = scaled + 'px';
-    fill.style.background = 'rgba(220, 70, 70, 0.22)';
-    fill.style.border = `1px solid rgba(220,70,70,0.28)`;
-    fill.style.left = '50%';
-    fill.style.top = '50%';
-    fill.style.transform = 'translate(-50%,-50%)';
+    // Shrink: draw filled mini-plate sized to scaled diameter and a rim at the same small size
+    const fill = document.createElement('div'); fill.className='overlayFill';
+    fill.style.width = scaled + 'px'; fill.style.height = scaled + 'px';
+    fill.style.background = 'rgba(220,70,70,0.22)'; fill.style.border = '1px solid rgba(220,70,70,0.28)';
+    fill.style.left='50%'; fill.style.top='50%'; fill.style.transform='translate(-50%,-50%)'; fill.style.boxSizing='border-box';
     node.appendChild(fill);
 
-    const rim = document.createElement('div');
-    rim.className = 'annulus';
-    rim.style.position = 'absolute';
-    rim.style.left = '50%';
-    rim.style.top = '50%';
-    rim.style.transform = 'translate(-50%,-50%)';
-    rim.style.boxSizing = 'border-box';
-    const outer = scaled;
-    const thickness = Math.max(2, Math.min(8, Math.round(outer * 0.02)));
-    rim.style.width = outer + 'px';
-    rim.style.height = outer + 'px';
+    const rim = document.createElement('div'); rim.className='annulus';
+    rim.style.position='absolute'; rim.style.left='50%'; rim.style.top='50%'; rim.style.transform='translate(-50%,-50%)';
+    rim.style.boxSizing='border-box';
+    const outer = scaled; const thickness = Math.max(2, Math.round(outer * 0.02));
+    rim.style.width = outer + 'px'; rim.style.height = outer + 'px';
     rim.style.border = `${thickness}px solid rgba(220,70,70,0.22)`;
     node.appendChild(rim);
   }
 }
 
-/* helpers for calories -> grams conversion and target map construction
-   We'll use avgKcalPerGram = 1.5 (approximate mixed diet).
-   Build a target map distributing grams across common items to reach the kcal target.
-*/
-const avgKcalPerGram = 1.5;
-
-function kcalToGrams(kcal){
-  return Math.max(0, Math.round(kcal / avgKcalPerGram));
-}
-
-/* Build a simple grams map by splitting target grams across a few items
-   If payload contains certain item ids, try to preserve those ids; otherwise use a fixed list.
-*/
-function buildTargetGramsMap(totalGrams){
-  const idsPreferred = ['potato','carrot','bread_variant','sausage','apple','milk'];
-  const map = {};
-  let remaining = totalGrams;
-  const n = idsPreferred.length;
-  // distribute roughly evenly but give bread and potato more weight
-  const weights = [1.3,1,1.1,0.9,0.9,1.0];
-  const totalW = weights.reduce((s,w)=>s+w,0);
-  idsPreferred.forEach((id,i)=>{
-    const g = Math.round((weights[i]/totalW) * totalGrams);
-    map[id] = g;
-    remaining -= g;
-  });
-  // adjust leftover
-  let i = 0;
-  while (remaining > 0) {
-    const key = idsPreferred[i % n];
-    map[key] = (map[key] || 0) + 1;
-    remaining--;
-    i++;
-  }
-  return map;
-}
-
-/* Reuse existing runCompare / clearCompare implementations adapted for our DOM nodes.
-   For brevity we keep a compact version here that calls previously defined helpers.
-*/
-
-function totalCaloriesFromMap(map){
-  let sum = 0;
-  Object.keys(map || {}).forEach(id => {
-    const grams = map[id] || 0;
-    const calPerG = CAL_PER_G[id] !== undefined ? CAL_PER_G[id] : 0.8;
-    sum += grams * calPerG;
-  });
-  return sum;
-}
+/* calories helpers */
 function totalCaloriesPayloadFromPositions(positions){
   return (positions || []).reduce((s,p) => {
     if (typeof p.kcalPerPortion === 'number' && typeof p.gramsPerPortion === 'number' && p.gramsPerPortion > 0) {
-      const calPerG = (p.kcalPerPortion / p.gramsPerPortion);
-      return s + (p.grams || 0) * calPerG;
+      const calPerG = p.kcalPerPortion / p.gramsPerPortion; return s + (p.grams || 0) * calPerG;
     }
-    const calPerG = CAL_PER_G[p.id] !== undefined ? CAL_PER_G[p.id] : 0.8;
-    return s + (p.grams || 0) * calPerG;
+    const calPerG = CAL_PER_G[p.id] !== undefined ? CAL_PER_G[p.id] : 0.8; return s + (p.grams || 0) * calPerG;
   }, 0);
 }
 function totalCaloriesPayload(){
@@ -561,89 +322,67 @@ function totalCaloriesPayload(){
   return Math.max(0, Math.round(totalCaloriesPayloadFromPositions(payload.positions || [])));
 }
 
+/* conversion and target map builder */
+const avgKcalPerGram = 1.5;
+function kcalToGrams(kcal){ return Math.max(0, Math.round(kcal / avgKcalPerGram)); }
+function buildTargetGramsMap(totalGrams){
+  const idsPreferred = ['potato','carrot','bread_variant','sausage','apple','milk'];
+  const weights = [1.3,1,1.1,0.9,0.9,1.0];
+  const totalW = weights.reduce((s,w)=>s+w,0);
+  const map = {}; let remaining = totalGrams;
+  idsPreferred.forEach((id,i)=>{
+    const g = Math.round((weights[i]/totalW) * totalGrams);
+    map[id] = g; remaining -= g;
+  });
+  let i = 0;
+  while (remaining > 0) { const key = idsPreferred[i % idsPreferred.length]; map[key] = (map[key]||0) + 1; remaining--; i++; }
+  return map;
+}
+
+/* runCompare for both panels (uses overlay/annulus functions). targetMap is grams per id */
 function computeScaleFromCalories(targetMap){
   const actual = Math.max(1, totalCaloriesPayload());
-  const target = Math.max(0, totalCaloriesFromMap(targetMap || {}));
-  if (target <= 0) return 0.001;
-  return Math.max(0.12, Math.min(3.0, Math.sqrt(target / actual)));
+  const target = Math.max(0, Object.keys(targetMap||{}).reduce((s,k)=>s + (targetMap[k]||0) * (CAL_PER_G[k] !== undefined ? CAL_PER_G[k] : 0.8), 0));
+  if (target <= 0) return 0.001; return Math.max(0.12, Math.min(3.0, Math.sqrt(target / actual)));
 }
+function placeSideColumn(sideContainer, toRight){ if (!sideContainer) return; sideContainer.classList.remove('left'); if (!toRight) sideContainer.classList.add('left'); }
 
-/* place side column left/right */
-function placeSideColumn(sideContainer, toRight){
-  if (!sideContainer) return;
-  sideContainer.classList.remove('left');
-  if (!toRight) sideContainer.classList.add('left');
-}
-
-/* runCompare adapted (uses previously defined buildOverlay, drawAnnulus, etc.)
-   targetMap is grams per id (e.g. { potato: 150, ... })
-*/
-function runCompare(targetOverlay, targetBase, annNode, sideContainer, captionEl, targetMap, title){
+function buildOverlayAndCompare(targetOverlay, targetBase, annNode, sideContainer, captionEl, targetMap, title){
   if (!payload) { alert('No saved plate'); return; }
-
-  targetOverlay.innerHTML = '';
-  annNode.innerHTML = '';
-  sideContainer.innerHTML = '';
-
-  // render static side items (colored)
+  targetOverlay.innerHTML = ''; annNode.innerHTML = ''; sideContainer.innerHTML = '';
   renderSideOnly(sideContainer, targetBase);
-
   buildOverlay(targetOverlay);
-
   const scale = computeScaleFromCalories(targetMap);
-
-  // hide base on-plate items (we show ghost + scaled overlay)
-  Array.from(targetBase.querySelectorAll('.itemWrapper')).forEach(el => {
-    if (el.dataset.onplate === '1') el.classList.add('hidden-onplate');
-  });
-
-  // scale plate-area
+  Array.from(targetBase.querySelectorAll('.itemWrapper')).forEach(el => { if (el.dataset.onplate === '1') el.classList.add('hidden-onplate'); });
   const plateArea = targetBase.querySelector('.plate-area');
-  if (plateArea) {
-    plateArea.style.transition = 'transform 700ms cubic-bezier(.2,.9,.2,1)';
-    requestAnimationFrame(()=> plateArea.style.transform = `translate(-50%,-50%) scale(${scale})`);
-  }
-
-  // draw annulus/fill
+  if (plateArea) { plateArea.style.transition = 'transform 700ms cubic-bezier(.2,.9,.2,1)'; requestAnimationFrame(()=> plateArea.style.transform = `translate(-50%,-50%) scale(${scale})`); }
   drawAnnulus(annNode, scale);
-
-  // style ghost vs scaled
+  // style ghost/inner/scaled images
   const ghostImgs = targetOverlay._ghost ? Array.from(targetOverlay._ghost.querySelectorAll('img')) : [];
   const ghostInnerImgs = targetOverlay._ghostInner ? Array.from(targetOverlay._ghostInner.querySelectorAll('img')) : [];
   const scaledImgs = targetOverlay._scaled ? Array.from(targetOverlay._scaled.querySelectorAll('img')) : [];
-
-  ghostImgs.forEach(i => { i.className = 'ghost-img'; });
-  ghostInnerImgs.forEach(i => { i.className = 'ghost-inner'; });
-  scaledImgs.forEach(i => { i.className = 'scaled-img'; });
-
-  // scale each recommendation item around its center
-  const scaledGroup = targetOverlay._scaled;
-  if (scaledGroup) {
-    Array.from(scaledGroup.querySelectorAll('.itemWrapper')).forEach(sw => {
+  ghostImgs.forEach(i=>i.className='ghost-img'); ghostInnerImgs.forEach(i=>i.className='ghost-inner'); scaledImgs.forEach(i=>i.className='scaled-img');
+  if (targetOverlay._scaled) {
+    Array.from(targetOverlay._scaled.querySelectorAll('.itemWrapper')).forEach(sw => {
       const rotate = Number(sw.dataset.rotate || 0);
       sw.style.transition = 'transform 700ms cubic-bezier(.2,.9,.2,1)';
       requestAnimationFrame(()=> sw.style.transform = `translate(-50%,-50%) rotate(${rotate}deg) scale(${scale})`);
     });
   }
-
-  // side column placement
   const actualCal = Math.round(totalCaloriesPayload());
-  const targetCal = Math.round(totalCaloriesFromMap(targetMap || {}));
+  const targetCal = Math.round(Object.keys(targetMap||{}).reduce((s,k)=>s + (targetMap[k]||0) * (CAL_PER_G[k] !== undefined ? CAL_PER_G[k] : 0.8), 0));
   placeSideColumn(sideContainer, targetCal >= actualCal);
-
-  // friendly caption text
   setTimeout(()=> {
     let diffPct = 0;
     if (actualCal > 0) diffPct = Math.round(((targetCal - actualCal) / actualCal) * 100);
     else diffPct = targetCal > 0 ? 100 : 0;
-
     if (diffPct < 0) captionEl.textContent = `Recommendation is ${Math.abs(diffPct)}% lower than your plate`;
     else if (diffPct > 0) captionEl.textContent = `Recommendation is ${diffPct}% higher than your plate`;
     else captionEl.textContent = 'Recommendation matches your plate';
-  }, 800);
+  }, 750);
 }
 
-/* render only side items colored (used by both compares) */
+/* render only side items colored */
 function renderSideOnly(sideContainer, targetBase){
   sideContainer.innerHTML = '';
   const slots = computeSideSlots(targetBase.parentElement);
@@ -651,11 +390,8 @@ function renderSideOnly(sideContainer, targetBase){
     if (p.placement !== 'side') return;
     const idx = (typeof p.sideSlot === 'number') ? p.sideSlot : 0;
     const chosen = slots[Math.min(idx, slots.length-1)] || {x:targetBase.parentElement.clientWidth-100,y:40};
-    const si = document.createElement('div');
-    si.className = 'sideItem';
-    si.style.position = 'absolute';
-    si.style.left = (chosen.x - 40) + 'px';
-    si.style.top = (chosen.y - 20) + 'px';
+    const si = document.createElement('div'); si.className='sideItem'; si.style.position='absolute';
+    si.style.left = (chosen.x - 40) + 'px'; si.style.top = (chosen.y - 20) + 'px';
     const src = p._imgOverride || resolveImage(p);
     si.innerHTML = `<img src="${escapeAttr(src)}" alt="${escapeAttr(p.label||p.id||'')}" style="width:100%;height:100%;object-fit:contain">`;
     sideContainer.appendChild(si);
@@ -664,18 +400,106 @@ function renderSideOnly(sideContainer, targetBase){
 
 /* Clear compare */
 function clearCompare(targetOverlay, targetBase, annNode, sideContainer, captionEl){
-  targetOverlay.innerHTML = '';
-  annNode.innerHTML = '';
-  sideContainer.innerHTML = '';
+  targetOverlay.innerHTML = ''; annNode.innerHTML = ''; sideContainer.innerHTML = '';
   const plateArea = targetBase.querySelector('.plate-area');
-  if (plateArea) {
-    plateArea.style.transition = 'transform 300ms ease';
-    plateArea.style.transform = 'translate(-50%,-50%) scale(1)';
-  }
-  Array.from(targetBase.querySelectorAll('.itemWrapper')).forEach(el => {
-    if (el.dataset.onplate === '1') el.classList.remove('hidden-onplate');
-  });
+  if (plateArea) { plateArea.style.transition = 'transform 300ms ease'; plateArea.style.transform = 'translate(-50%,-50%) scale(1)'; }
+  Array.from(targetBase.querySelectorAll('.itemWrapper')).forEach(el => { if (el.dataset.onplate === '1') el.classList.remove('hidden-onplate'); });
   captionEl.textContent = 'Comparison cleared. Template remains colored.';
+}
+
+/* OWID JSON fetch and parsing — robust and CORS-friendly
+   The grapher JSON format contains:
+   - "data": { "<year>": { "<entity>": <value>, ... }, ... } OR series structure depending on endpoint.
+   Our endpoint returns a series per country; we iterate and pick latest non-null datapoint for our country list.
+*/
+async function loadOwidData(){
+  try {
+    const res = await fetch(OWID_JSON_URL);
+    if (!res.ok) throw new Error('OWID fetch failed: ' + res.status);
+    const json = await res.json();
+    // OWID grapher JSON format: an array "data" with objects { "year": <n>, "<country>": <val>, ... } OR series in "data" plus "dimension"
+    // Two robust approaches:
+    // 1) If json has property "data" as an array of rows with year and country keys, find latest value per country.
+    // 2) If json is a mapping of series, check "data" structure.
+    latestKcalByCountry = {};
+    // Attempt structure where json.data is array of {year, entity1:val1, ...}
+    if (Array.isArray(json.data)) {
+      // find available years and columns
+      const rows = json.data;
+      // rows look like { "year": 2022, "Finland": 3200, ... } sometimes; but grapher usually returns { "entity": "...", "year":.., "value":... } as series
+      // Check row shape
+      if (rows.length && rows[0].hasOwnProperty('year') && (rows[0].hasOwnProperty('country') || rows[0].hasOwnProperty('entity') || rows[0].hasOwnProperty('name'))) {
+        // case: array of {entity/country, year, value}
+        const byCountry = {};
+        rows.forEach(r => {
+          const country = r.entity || r.country || r.name;
+          const year = Number(r.year);
+          const val = (r.value == null ? NaN : Number(r.value));
+          if (!country || isNaN(year) || isNaN(val)) return;
+          if (!byCountry[country]) byCountry[country] = {};
+          byCountry[country][year] = val;
+        });
+        COUNTRY_LIST.forEach(c => {
+          const data = byCountry[c];
+          if (!data) { latestKcalByCountry[c] = null; return; }
+          const yrs = Object.keys(data).map(Number).filter(y=>!isNaN(y));
+          if (!yrs.length) { latestKcalByCountry[c] = null; return; }
+          const latest = Math.max(...yrs);
+          latestKcalByCountry[c] = { year: latest, kcal: data[latest] };
+        });
+      } else {
+        // case: rows are objects where columns are countries and year column is "year"
+        const years = rows.map(r => Number(r.year)).filter(y=>!isNaN(y));
+        const latestYear = Math.max(...years);
+        const latestRow = rows.find(r => Number(r.year) === latestYear);
+        COUNTRY_LIST.forEach(c => {
+          if (latestRow && latestRow.hasOwnProperty(c)) {
+            const v = Number(latestRow[c]);
+            latestKcalByCountry[c] = isNaN(v) ? null : { year: latestYear, kcal: v };
+          } else latestKcalByCountry[c] = null;
+        });
+      }
+    } else if (json.dimension && json.value) {
+      // fallback: grapher V2 sometimes provides series under json.values or json.data; try to parse known shapes
+      // Try parsing "data" object where keys are years mapping to country-keyed objects
+      if (json.data && typeof json.data === 'object') {
+        // json.data: { "1961": { "Finland": 3000, ... }, ... }
+        const byYear = json.data;
+        COUNTRY_LIST.forEach(c => {
+          let best = null;
+          Object.keys(byYear).forEach(y => {
+            const val = byYear[y] && byYear[y][c];
+            if (val != null && !isNaN(Number(val))) {
+              const year = Number(y);
+              if (!best || year > best.year) best = { year, kcal: Number(val) };
+            }
+          });
+          latestKcalByCountry[c] = best;
+        });
+      } else {
+        // As a last resort, try reading "columns" or "series"
+        COUNTRY_LIST.forEach(c => latestKcalByCountry[c] = null);
+      }
+    } else {
+      // Unknown JSON shape: populate nulls
+      COUNTRY_LIST.forEach(c => latestKcalByCountry[c] = null);
+    }
+  } catch (e) {
+    console.warn('Failed to load OWID data:', e);
+    COUNTRY_LIST.forEach(c => latestKcalByCountry[c] = null);
+  }
+}
+
+/* Populate select with labels and kcal info */
+function populateCountrySelect(){
+  countrySelect.innerHTML = '';
+  COUNTRY_LIST.forEach(c => {
+    const info = latestKcalByCountry[c];
+    const opt = document.createElement('option');
+    opt.value = c;
+    opt.textContent = info && info.kcal ? `${c} — ${Math.round(info.kcal)} kcal/day (${info.year})` : `${c} — (no data)`;
+    countrySelect.appendChild(opt);
+  });
 }
 
 /* UI wiring */
@@ -686,8 +510,8 @@ document.getElementById('resetAllBtn').addEventListener('click', ()=> {
 });
 
 document.getElementById('cmpRecommendedBtn').addEventListener('click', ()=> {
-  const recommendedMap = { carrot: 150, apple: 150, potato: 150, bread_variant: 0, sausage: 75, milk: 250, water: 0 };
-  runCompare(overRec, baseRec, annRec, sideRec, capRec, recommendedMap, 'Recommended (Finland) vs Estimate');
+  const recommendedMap = { carrot:150, apple:150, potato:150, bread_variant:0, sausage:75, milk:250, water:0 };
+  buildOverlayAndCompare(overRec, baseRec, annRec, sideRec, capRec, recommendedMap, 'Recommended (Finland) vs Estimate');
 });
 document.getElementById('clearRecommendedBtn').addEventListener('click', ()=> clearCompare(overRec, baseRec, annRec, sideRec, capRec));
 
@@ -701,47 +525,37 @@ cmpRealityBtn.addEventListener('click', ()=> {
   const lunchKcal = dailyKcal / 3;
   const lunchGrams = kcalToGrams(lunchKcal);
   const gramsMap = buildTargetGramsMap(lunchGrams);
-  clearCompare(overReal, baseReal, annReal, sideReal, capReal);
-  runCompare(overReal, baseReal, annReal, sideReal, capReal, gramsMap, `Reality vs Estimate (${country})`);
+  buildOverlayAndCompare(overReal, baseReal, annReal, sideReal, capReal, gramsMap, `Reality vs Estimate (${country})`);
 });
 
-/* init: load payload from sessionStorage and OWID data then render */
-(function init(){
-  // load user plate payload
-  const raw = sessionStorage.getItem(SESSION_KEY);
-  if (!raw) {
-    // fallback message
-    baseRec.innerHTML = ''; baseReal.innerHTML = '';
-    capRec.textContent = 'No saved plate found in sessionStorage under key: ' + SESSION_KEY;
-    capReal.textContent = 'No saved plate found in sessionStorage under key: ' + SESSION_KEY;
+/* init: load payload and OWID data then render */
+(async function init(){
+  // load user plate from sessionStorage
+  try {
+    const raw = sessionStorage.getItem(SESSION_KEY);
+    if (raw) payload = JSON.parse(raw);
+  } catch(e){ payload = null; }
+  if (payload) {
+    // minimal normalization (ensures fraction exists)
+    (payload.positions || []).forEach(item => {
+      if (typeof item.gramsPerPortion !== 'number') item.gramsPerPortion = item.gramsPerPortion || (DEFAULT_GRAMS[item.id] || 100);
+      if (!('grams' in item) || item.grams == null) item.grams = item.grams || 0;
+      if (item.gramsPerPortion && typeof item.grams === 'number') {
+        const rawf = item.grams / item.gramsPerPortion;
+        item.fraction = Number(Math.max(0, Math.min(1, rawf)).toFixed(3));
+      } else item.fraction = item.fraction || 1;
+    });
+    renderBase(baseRec, sideRec);
+    renderBase(baseReal, sideReal);
   } else {
-    try {
-      payload = JSON.parse(raw);
-    } catch(e){
-      payload = null;
-    }
-    if (payload) {
-      // normalize minimal fields used earlier
-      (payload.positions || []).forEach(item => {
-        if (typeof item.gramsPerPortion !== 'number') item.gramsPerPortion = item.gramsPerPortion || (DEFAULT_GRAMS[item.id] || 100);
-        if (!('grams' in item) || item.grams == null) item.grams = item.grams || 0;
-        if (item.gramsPerPortion && typeof item.grams === 'number') {
-          const rawFrac = item.grams / item.gramsPerPortion;
-          if (Math.abs(rawFrac - 0.5) < 0.02) item.fraction = 0.5;
-          else item.fraction = Number(rawFrac.toFixed(3));
-        } else item.fraction = item.fraction || 1;
-      });
-      renderBase(baseRec, sideRec);
-      renderBase(baseReal, sideReal);
-    }
+    baseRec.innerHTML = ''; baseReal.innerHTML = '';
+    capRec.textContent = 'No saved plate in sessionStorage under key: ' + SESSION_KEY;
+    capReal.textContent = 'No saved plate in sessionStorage under key: ' + SESSION_KEY;
   }
 
-  // fetch OWID data and populate select
-  fetchOwid().then(()=> {
-    populateCountrySelect();
-  }).catch(()=> {
-    populateCountrySelect();
-  });
+  // fetch OWID JSON endpoint and populate select
+  await loadOwidData();
+  populateCountrySelect();
 })();
 </script>
 </body>
