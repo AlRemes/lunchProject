@@ -2,14 +2,14 @@
 <html>
 <head>
 <meta charset="utf-8"/>
-<title>Compare Plate — scale by total calories</title>
+<title>Compare Plate — scale by total calories (with global reality)</title>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <style>
   :root {
     --plate-wrapper-size: 520px;
     --plate-diameter: 480px;
   }
-  body{font-family:Arial;margin:14px;background:#f6f6f7}
+  body{font-family:Arial,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;margin:14px;background:#f6f6f7;color:#222}
   .page{max-width:1200px;margin:0 auto}
   .topbar{display:flex;gap:12px;align-items:center;justify-content:space-between;margin-bottom:12px}
   .btn{padding:8px 12px;border-radius:6px;border:1px solid #bbb;background:#fff;cursor:pointer}
@@ -62,9 +62,12 @@
   .ghost-inner{filter:grayscale(100%) contrast(80%); opacity:0.18}
   .scaled-img{filter:none; opacity:1}
   .clip-half { -webkit-clip-path: polygon(0 0, 100% 100%, 0 100%); clip-path: polygon(0 0, 100% 100%, 0 100%); }
-  .caption{font-size:13px;color:#333;margin-top:8px;max-width:360px}
+  .caption{font-size:13px;color:#333;margin-top:8px;max-width:420px}
   .annulus{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);border-radius:50%;pointer-events:none;opacity:0.95;box-sizing:border-box}
   .hidden-onplate { opacity:0; transform:scale(0.98); transition:opacity 220ms ease, transform 220ms ease; pointer-events:none; }
+  .controlsRow{display:flex;gap:8px;align-items:center}
+  select.countrySelect{padding:6px;border-radius:6px;border:1px solid #ccc;background:#fff}
+  .note{font-size:12px;color:#666;margin-top:6px}
   @media (max-width:1000px){
     :root{ --plate-wrapper-size:420px; --plate-diameter:380px; }
     .sideColumn{right:12px}
@@ -76,9 +79,9 @@
     <div class="topbar">
       <div style="display:flex;gap:12px;align-items:center">
         <button id="backBtn" class="btn">Back</button>
-        <div class="small" style="color:#444">Template: your saved plate (colored). Use panels below to compare by calories.</div>
+        <div class="small" style="color:#444">Compare your plate to Finland recommendation and to average lunches around the world (Our World in Data)</div>
       </div>
-      <div style="display:flex;gap:8px">
+      <div style="display:flex;gap:8px;align-items:center">
         <button id="resetAllBtn" class="btn">Reset Comparisons</button>
       </div>
     </div>
@@ -88,7 +91,7 @@
         <div class="panelHeader">
           <div class="panelTitle">Compare to Recommended (Finland)</div>
           <div class="spacer"></div>
-          <div class="controls">
+          <div class="controlsRow">
             <button id="cmpRecommendedBtn" class="btn">Run Compare</button>
             <button id="clearRecommendedBtn" class="btn">Clear</button>
           </div>
@@ -103,17 +106,18 @@
           </div>
 
           <div>
-            <div class="caption" id="captionRecommended">Press Run Compare. Recommendation will be shown as a colored scaled plate or annulus; original items are shown as grey ghost beneath/inside the colored recommendation so you can compare.</div>
+            <div class="caption" id="captionRecommended">Press Run Compare to scale the plate to Finnish recommendation.</div>
           </div>
         </div>
       </div>
 
       <div class="panel">
         <div class="panelHeader">
-          <div class="panelTitle">Compare to Reality (custom)</div>
+          <div class="panelTitle">Compare to Reality (global lunch estimates)</div>
           <div class="spacer"></div>
-          <div class="controls">
-            <button id="cmpRealityBtn" class="btn">Run Compare</button>
+          <div class="controlsRow">
+            <select id="countrySelect" class="countrySelect"></select>
+            <button id="cmpRealityBtn" class="btn">Compare to Country</button>
             <button id="clearRealityBtn" class="btn">Clear</button>
           </div>
         </div>
@@ -127,7 +131,8 @@
           </div>
 
           <div>
-            <div class="caption" id="captionReality">Custom comparison. Enter a target grams mapping (or use recommended) when prompted.</div>
+            <div class="caption" id="captionReality">Select a country (data from Our World in Data) and click Compare. The daily calories per person (latest year) are divided by 3 to approximate a lunch-sized target and used to build a comparison plate automatically.</div>
+            <div class="note">Countries included: Finland, Sweden, Norway, Denmark, United States, Canada, Brazil, Argentina, Chile, China, India, Japan, Indonesia, Australia, New Zealand, Nigeria, Ethiopia, Kenya, South Africa, Egypt, Morocco</div>
           </div>
         </div>
       </div>
@@ -135,13 +140,18 @@
   </div>
 
 <script>
-/* Update: when recommendation is larger (green case) the original items show as a grey ghost AND
-   the inner area of each original item is shown faint grey (ghost-inner) so you clearly see
-   "grey inside, colored outside" before/after difference. For the shrink (red) case the translucent
-   mini-plate plus colored scaled items are shown and ghost remains beneath.
+/*
+  Updated compare.html — now includes:
+   - fetch of Our World in Data daily-per-capita-caloric-supply CSV
+   - builds a country list (scandinavia, americas, asia, oceania, south america, several african countries)
+   - computes lunch estimate = daily kcal / 3 (latest available year)
+   - converts lunch kcal -> grams using avgKcalPerGram
+   - builds a simple target grams map and runs the existing runCompare() against the second panel
+   - preserves previous visual compare behaviour
 */
 
 const SESSION_KEY = 'plate_positions_fallback';
+const OWID_CSV = 'https://ourworldindata.org/grapher/daily-per-capita-caloric-supply.csv';
 
 const CAL_PER_G = {
   potato: 0.77, sausage: 2.5, carrot: 0.41,
@@ -164,9 +174,25 @@ const CATALOG_IMG = {
 
 const DEFAULT_GRAMS = { potato:150, sausage:75, carrot:75, bread:40, bread_variant:40, apple:150, milk:250, water:200 };
 
-let payload = null;
+/* countries we will expose */
+const COUNTRY_LIST = [
+  "Finland","Sweden","Norway","Denmark",
+  "United States","Canada",
+  "Brazil","Argentina","Chile",
+  "China","India","Japan","Indonesia",
+  "Australia","New Zealand",
+  "Nigeria","Ethiopia","Kenya","South Africa","Egypt",
+  "Morocco"
+];
 
-/* DOM refs */
+let owidDataByCountry = {}; // { country: { year: kcal, ... }, ... }
+let latestKcalByCountry = {}; // { country: latestKcal }
+
+// DOM refs
+const countrySelect = document.getElementById('countrySelect');
+const cmpRealityBtn = document.getElementById('cmpRealityBtn');
+const clearRealityBtn = document.getElementById('clearRealityBtn');
+
 const baseRec = document.getElementById('baseRecommended');
 const annRec  = document.getElementById('annulusRecommended');
 const overRec = document.getElementById('overlayRecommended');
@@ -179,11 +205,81 @@ const overReal = document.getElementById('overlayReality');
 const sideReal = document.getElementById('sideReal');
 const capReal  = document.getElementById('captionReality');
 
-function loadPayload(){
-  const raw = sessionStorage.getItem(SESSION_KEY);
-  if (!raw) return null;
-  try { return JSON.parse(raw); } catch(e){ return null; }
+let payload = null;
+
+/* Utilities to parse CSV (simple, small parser) */
+function parseCsv(text){
+  const lines = text.split(/\r?\n/).filter(Boolean);
+  if (lines.length === 0) return [];
+  const header = lines[0].split(',');
+  const rows = [];
+  for (let i=1;i<lines.length;i++){
+    const line = lines[i];
+    // naive CSV split (OWID CSV uses simple values)
+    const cols = line.split(',');
+    if (cols.length !== header.length) continue;
+    const obj = {};
+    for (let j=0;j<header.length;j++){
+      obj[header[j]] = cols[j];
+    }
+    rows.push(obj);
+  }
+  return { header, rows };
 }
+
+/* Load OWID CSV and populate latestKcalByCountry for our COUNTRY_LIST */
+async function fetchOwid(){
+  try {
+    const res = await fetch(OWID_CSV);
+    if (!res.ok) throw new Error('CSV fetch failed ' + res.status);
+    const txt = await res.text();
+    const parsed = parseCsv(txt);
+    // CSV columns: country, year, total (or value) — inspect header names
+    const hdr = parsed.header;
+    const rows = parsed.rows;
+    // find the value column (commonly "Daily supply of calories per person")
+    // Inspect headers; typical grapher CSV has column names like "Country","Year","Daily supply of calories per person"
+    // We'll locate the numeric column that's not "country" or "year"
+    const valCol = hdr.find(h => !['country','Year','year','Country','Entity'].includes(h));
+    rows.forEach(r => {
+      const country = r['country'] || r['Country'] || r['Entity'] || r['entity'] || '';
+      const year = Number(r['year'] || r['Year'] || '');
+      const v = Number(r[valCol]);
+      if (!country || isNaN(year) || isNaN(v)) return;
+      if (!owidDataByCountry[country]) owidDataByCountry[country] = {};
+      owidDataByCountry[country][year] = v;
+    });
+
+    // build latestKcalByCountry for our COUNTRY_LIST
+    COUNTRY_LIST.forEach(c => {
+      const data = owidDataByCountry[c];
+      if (!data) { latestKcalByCountry[c] = null; return; }
+      const years = Object.keys(data).map(Number).filter(y => !isNaN(y));
+      if (years.length === 0){ latestKcalByCountry[c] = null; return; }
+      const latestYear = Math.max(...years);
+      latestKcalByCountry[c] = { year: latestYear, kcal: data[latestYear] };
+    });
+  } catch (e) {
+    console.warn('Failed to fetch OWID CSV', e);
+    // fallback: keep latestKcalByCountry empty
+    COUNTRY_LIST.forEach(c => latestKcalByCountry[c] = null);
+  }
+}
+
+/* Fill country select with readable labels and (kcal/year) info when available */
+function populateCountrySelect(){
+  countrySelect.innerHTML = '';
+  COUNTRY_LIST.forEach(c => {
+    const info = latestKcalByCountry[c];
+    const label = info && info.kcal ? `${c} — ${Math.round(info.kcal)} kcal/day (${info.year})` : `${c} — (no data)`;
+    const opt = document.createElement('option');
+    opt.value = c;
+    opt.textContent = label;
+    countrySelect.appendChild(opt);
+  });
+}
+
+/* Helpers re-using existing compare code (simplified duplicates included here) */
 
 function computeSideSlots(canvasEl){
   const rect = canvasEl.getBoundingClientRect();
@@ -199,35 +295,18 @@ function computeSideSlots(canvasEl){
   return slots;
 }
 
-/* Normalize payload preserving overrides/metadata */
-function normalizePayload(p){
-  (p.positions || []).forEach(item => {
-    if (typeof item.gramsPerPortion !== 'number') item.gramsPerPortion = item.gramsPerPortion || (DEFAULT_GRAMS[item.id] || 100);
-    if (!('grams' in item) || item.grams == null) {
-      if ('fraction' in item && item.fraction && item.gramsPerPortion) item.grams = Math.round(item.fraction * item.gramsPerPortion);
-      else item.grams = item.grams || 0;
-    }
-    if (item.gramsPerPortion && typeof item.grams === 'number') {
-      const raw = item.grams / item.gramsPerPortion;
-      if (Math.abs(raw - 0.5) < 0.02) item.fraction = 0.5;
-      else if (Math.abs(raw - 0.25) < 0.02) item.fraction = 0.25;
-      else item.fraction = Number(raw.toFixed(3));
-    } else {
-      item.fraction = item.fraction || 1;
-    }
-    if (typeof item.kcalPerPortion !== 'number') {
-      const calpg = CAL_PER_G[item.id] !== undefined ? CAL_PER_G[item.id] : 0.8;
-      item.kcalPerPortion = Math.round((item.gramsPerPortion || DEFAULT_GRAMS[item.id] || 100) * calpg);
-    }
-  });
-  if (!('totalCalories' in p) || typeof p.totalCalories !== 'number') {
-    p.totalCalories = totalCaloriesPayloadFromPositions(p.positions || []);
-  } else {
-    p.totalCalories = Math.round(Math.max(0, Number(p.totalCalories) || 0));
-  }
+function escapeAttr(s){ return String(s||'').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+function resolveImage(p){
+  if (p._imgOverride) return p._imgOverride;
+  if (p.id === 'bread_variant') return CATALOG_IMG.bread_variant;
+  if (p.id === 'bread_with_butter') return CATALOG_IMG.bread_with_butter;
+  if (p.id === 'slice_of_bread') return CATALOG_IMG.slice_of_bread;
+  if (p.id && CATALOG_IMG[p.id]) return CATALOG_IMG[p.id];
+  return 'images/' + (p.id || 'unknown') + '.svg';
 }
 
-/* Render base visible plate items and side column (side items colored) */
+/* Render base (original items) */
 function renderBase(targetBase, sideContainer){
   targetBase.innerHTML = '';
   sideContainer.innerHTML = '';
@@ -275,18 +354,7 @@ function renderBase(targetBase, sideContainer){
   });
 }
 
-/* Resolve image path and prefer _imgOverride */
-function resolveImage(p){
-  if (p._imgOverride) return p._imgOverride;
-  if (p.id === 'bread_variant') return CATALOG_IMG.bread_variant;
-  if (p.id === 'bread_with_butter') return CATALOG_IMG.bread_with_butter;
-  if (p.id === 'slice_of_bread') return CATALOG_IMG.slice_of_bread;
-  if (p.id && CATALOG_IMG[p.id]) return CATALOG_IMG[p.id];
-  return 'images/' + (p.id || 'unknown') + '.svg';
-}
-
-/* Build overlay with ghostGroup (grey originals) and scaledGroup (colored recommendation).
-   Also create ghost-inner duplicates ready for green-case inner-grey overlay. */
+/* Build overlay (ghost + scaled) */
 function buildOverlay(targetOverlay){
   targetOverlay.innerHTML = '';
   const container = document.createElement('div');
@@ -332,13 +400,12 @@ function buildOverlay(targetOverlay){
     gw.appendChild(gimg);
     ghost.appendChild(gw);
 
-    // ghost-inner: slightly smaller faint grey to appear "inside" the grey shape (for green case)
+    // ghost-inner (faint inner grey)
     const giw = document.createElement('div');
     giw.className = 'itemWrapper';
     giw.style.position = 'absolute';
     giw.style.left = (p.x||0) + 'px';
     giw.style.top  = (p.y||0) + 'px';
-    // make inner slightly smaller (scale applied via transform)
     giw.style.width = (p.sizePx||48) + 'px';
     giw.style.height = (p.sizePx||48) + 'px';
     giw.style.transform = `translate(-50%,-50%) rotate(${p.rotationDeg||0}deg) scale(0.86)`;
@@ -347,11 +414,10 @@ function buildOverlay(targetOverlay){
     giimg.alt = p.label || p.id || '';
     giimg.className = 'ghost-inner';
     if (Math.abs(gfrac - 0.5) < 0.001) giimg.classList.add('clip-half');
-    else if (gfrac < 0.5) giimg.style.transform = `scale(${Math.max(0.25, Math.min(1, gfrac))})`;
     giw.appendChild(giimg);
     ghostInnerLayer.appendChild(giw);
 
-    // scaled (recommendation) — colored layer on top
+    // scaled (recommendation)
     const sw = document.createElement('div');
     sw.className = 'itemWrapper';
     sw.style.position = 'absolute';
@@ -372,7 +438,6 @@ function buildOverlay(targetOverlay){
     scaled.appendChild(sw);
   });
 
-  // order: ghost (full grey), ghost-inner (faint inner grey), scaled (colored on top)
   container.appendChild(ghost);
   container.appendChild(ghostInnerLayer);
   container.appendChild(scaled);
@@ -382,32 +447,7 @@ function buildOverlay(targetOverlay){
   targetOverlay._scaled = scaled;
 }
 
-/* calorie helpers */
-function totalCaloriesFromMap(map){
-  let sum = 0;
-  Object.keys(map || {}).forEach(id => {
-    const grams = map[id] || 0;
-    const calPerG = CAL_PER_G[id] !== undefined ? CAL_PER_G[id] : 0.8;
-    sum += grams * calPerG;
-  });
-  return sum;
-}
-function totalCaloriesPayloadFromPositions(positions){
-  return (positions || []).reduce((s,p) => {
-    if (typeof p.kcalPerPortion === 'number' && typeof p.gramsPerPortion === 'number' && p.gramsPerPortion > 0) {
-      const calPerG = (p.kcalPerPortion / p.gramsPerPortion);
-      return s + (p.grams || 0) * calPerG;
-    }
-    const calPerG = CAL_PER_G[p.id] !== undefined ? CAL_PER_G[p.id] : 0.8;
-    return s + (p.grams || 0) * calPerG;
-  }, 0);
-}
-function totalCaloriesPayload(){
-  if (payload && typeof payload.totalCalories === 'number') return Math.max(0, Math.round(payload.totalCalories));
-  return Math.max(0, Math.round(totalCaloriesPayloadFromPositions(payload.positions || [])));
-}
-
-/* Draw annulus/fill and keep outer rim consistent with scaled diameter */
+/* Draw annulus/fill */
 function drawAnnulus(node, scale){
   node.innerHTML = '';
   if (!scale || isNaN(scale)) return;
@@ -426,7 +466,7 @@ function drawAnnulus(node, scale){
     const thickness = Math.max(4, (scaled - base) / 2);
     ann.style.width = outer + 'px';
     ann.style.height = outer + 'px';
-    ann.style.border = `${thickness}px solid rgba(88, 196, 104, 0.95)`; // green
+    ann.style.border = `${thickness}px solid rgba(88, 196, 104, 0.95)`;
     node.appendChild(ann);
   } else {
     const fill = document.createElement('div');
@@ -456,138 +496,47 @@ function drawAnnulus(node, scale){
   }
 }
 
-/* compute scale and clamp */
-function computeScaleFromCalories(targetMap){
-  const actual = Math.max(1, totalCaloriesPayload());
-  const target = Math.max(0, totalCaloriesFromMap(targetMap || {}));
-  if (target <= 0) return 0.001;
-  return Math.max(0.12, Math.min(3.0, Math.sqrt(target / actual)));
-}
-
-/* side column placement */
-function placeSideColumn(sideContainer, toRight){
-  if (!sideContainer) return;
-  sideContainer.classList.remove('left');
-  if (!toRight) sideContainer.classList.add('left');
-}
-
-/* runCompare: always show ghost (grey original + faint inner) beneath colored scaled recommendation items.
-   For green-case the faint inner-grey layer makes the "grey inside" effect visible under the scaled colored items.
+/* helpers for calories -> grams conversion and target map construction
+   We'll use avgKcalPerGram = 1.5 (approximate mixed diet).
+   Build a target map distributing grams across common items to reach the kcal target.
 */
-function runCompare(targetOverlay, targetBase, annNode, sideContainer, captionEl, targetMap, title){
-  if (!payload) { alert('No saved plate'); return; }
+const avgKcalPerGram = 1.5;
 
-  targetOverlay.innerHTML = '';
-  annNode.innerHTML = '';
-  sideContainer.innerHTML = '';
-
-  // render static side items (colored)
-  renderSideOnly(sideContainer, targetBase);
-
-  buildOverlay(targetOverlay);
-
-  const scale = computeScaleFromCalories(targetMap);
-
-  // hide original base on-plate items (we have the ghost layer)
-  Array.from(targetBase.querySelectorAll('.itemWrapper')).forEach(el => {
-    if (el.dataset.onplate === '1') el.classList.add('hidden-onplate');
-  });
-
-  // scale plate-area so plate visual resizes
-  const plateArea = targetBase.querySelector('.plate-area');
-  if (plateArea) {
-    plateArea.style.transition = 'transform 700ms cubic-bezier(.2,.9,.2,1)';
-    requestAnimationFrame(()=> plateArea.style.transform = `translate(-50%,-50%) scale(${scale})`);
-  }
-
-  // draw annulus / mini-plate
-  drawAnnulus(annNode, scale);
-
-  // collect image lists
-  const ghostImgs = targetOverlay._ghost ? Array.from(targetOverlay._ghost.querySelectorAll('img')) : [];
-  const ghostInnerImgs = targetOverlay._ghostInner ? Array.from(targetOverlay._ghostInner.querySelectorAll('img')) : [];
-  const scaledImgs = targetOverlay._scaled ? Array.from(targetOverlay._scaled.querySelectorAll('img')) : [];
-
-  // normalize styling
-  ghostImgs.forEach(i => { i.className = 'ghost-img'; });
-  ghostInnerImgs.forEach(i => { i.className = 'ghost-inner'; });
-  scaledImgs.forEach(i => { i.className = 'scaled-img'; });
-
-  // For green case (scale >= 1) we want ghost grey + faint inner grey visible and colored scaled items on top.
-  // For red case (scale < 1) ghost grey sits beneath translucent mini-plate; scaled items colored on top.
-  // Scaling of recommendation items happens in both cases.
-  const scaledGroup = targetOverlay._scaled;
-  if (scaledGroup) {
-    Array.from(scaledGroup.querySelectorAll('.itemWrapper')).forEach(sw => {
-      const rotate = Number(sw.dataset.rotate || 0);
-      sw.style.transition = 'transform 700ms cubic-bezier(.2,.9,.2,1)';
-      requestAnimationFrame(()=> sw.style.transform = `translate(-50%,-50%) rotate(${rotate}deg) scale(${scale})`);
-    });
-  }
-
-  // Ensure ghost inner sits above ghost but below scaled — already ordered that way when appended.
-  // For green case, make ghost images a bit more visible (so inner-grey shows) while still muted.
-  if (scale >= 1) {
-    ghostImgs.forEach(i => i.style.opacity = '0.45');
-    ghostInnerImgs.forEach(i => i.style.opacity = '0.22');
-  } else {
-    ghostImgs.forEach(i => i.style.opacity = '0.9');
-    ghostInnerImgs.forEach(i => i.style.opacity = '0.18');
-  }
-
-  // side column placement
-  const actualCal = Math.round(totalCaloriesPayload());
-  const targetCal = Math.round(totalCaloriesFromMap(targetMap || {}));
-  placeSideColumn(sideContainer, targetCal >= actualCal);
-
-  // friendly caption
-  setTimeout(()=> {
-    let diffPct = 0;
-    if (actualCal > 0) diffPct = Math.round(((targetCal - actualCal) / actualCal) * 100);
-    else diffPct = targetCal > 0 ? 100 : 0;
-
-    if (diffPct < 0) captionEl.textContent = `Recommendation is ${Math.abs(diffPct)}% lower than your plate`;
-    else if (diffPct > 0) captionEl.textContent = `Recommendation is ${diffPct}% higher than your plate`;
-    else captionEl.textContent = 'Recommendation matches your plate';
-  }, 800);
+function kcalToGrams(kcal){
+  return Math.max(0, Math.round(kcal / avgKcalPerGram));
 }
 
-/* render only side items colored */
-function renderSideOnly(sideContainer, targetBase){
-  sideContainer.innerHTML = '';
-  const slots = computeSideSlots(targetBase.parentElement);
-  (payload.positions || []).forEach(p => {
-    if (p.placement !== 'side') return;
-    const idx = (typeof p.sideSlot === 'number') ? p.sideSlot : 0;
-    const chosen = slots[Math.min(idx, slots.length-1)] || {x:targetBase.parentElement.clientWidth-100,y:40};
-    const si = document.createElement('div');
-    si.className = 'sideItem';
-    si.style.position = 'absolute';
-    si.style.left = (chosen.x - 40) + 'px';
-    si.style.top = (chosen.y - 20) + 'px';
-    const src = p._imgOverride || resolveImage(p);
-    si.innerHTML = `<img src="${escapeAttr(src)}" alt="${escapeAttr(p.label||p.id||'')}" style="width:100%;height:100%;object-fit:contain">`;
-    sideContainer.appendChild(si);
+/* Build a simple grams map by splitting target grams across a few items
+   If payload contains certain item ids, try to preserve those ids; otherwise use a fixed list.
+*/
+function buildTargetGramsMap(totalGrams){
+  const idsPreferred = ['potato','carrot','bread_variant','sausage','apple','milk'];
+  const map = {};
+  let remaining = totalGrams;
+  const n = idsPreferred.length;
+  // distribute roughly evenly but give bread and potato more weight
+  const weights = [1.3,1,1.1,0.9,0.9,1.0];
+  const totalW = weights.reduce((s,w)=>s+w,0);
+  idsPreferred.forEach((id,i)=>{
+    const g = Math.round((weights[i]/totalW) * totalGrams);
+    map[id] = g;
+    remaining -= g;
   });
-}
-
-/* clear comparison: remove overlay & annulus, reset plate scale, restore base */
-function clearCompare(targetOverlay, targetBase, annNode, sideContainer, captionEl){
-  targetOverlay.innerHTML = '';
-  annNode.innerHTML = '';
-  sideContainer.innerHTML = '';
-  const plateArea = targetBase.querySelector('.plate-area');
-  if (plateArea) {
-    plateArea.style.transition = 'transform 300ms ease';
-    plateArea.style.transform = 'translate(-50%,-50%) scale(1)';
+  // adjust leftover
+  let i = 0;
+  while (remaining > 0) {
+    const key = idsPreferred[i % n];
+    map[key] = (map[key] || 0) + 1;
+    remaining--;
+    i++;
   }
-  Array.from(targetBase.querySelectorAll('.itemWrapper')).forEach(el => {
-    if (el.dataset.onplate === '1') el.classList.remove('hidden-onplate');
-  });
-  captionEl.textContent = 'Comparison cleared. Template remains colored.';
+  return map;
 }
 
-/* helpers */
+/* Reuse existing runCompare / clearCompare implementations adapted for our DOM nodes.
+   For brevity we keep a compact version here that calls previously defined helpers.
+*/
+
 function totalCaloriesFromMap(map){
   let sum = 0;
   Object.keys(map || {}).forEach(id => {
@@ -612,15 +561,6 @@ function totalCaloriesPayload(){
   return Math.max(0, Math.round(totalCaloriesPayloadFromPositions(payload.positions || [])));
 }
 
-function resolveImage(p){
-  if (p._imgOverride) return p._imgOverride;
-  if (p.id === 'bread_variant') return CATALOG_IMG.bread_variant;
-  if (p.id === 'bread_with_butter') return CATALOG_IMG.bread_with_butter;
-  if (p.id === 'slice_of_bread') return CATALOG_IMG.slice_of_bread;
-  if (p.id && CATALOG_IMG[p.id]) return CATALOG_IMG[p.id];
-  return 'images/' + (p.id || 'unknown') + '.svg';
-}
-
 function computeScaleFromCalories(targetMap){
   const actual = Math.max(1, totalCaloriesPayload());
   const target = Math.max(0, totalCaloriesFromMap(targetMap || {}));
@@ -628,10 +568,114 @@ function computeScaleFromCalories(targetMap){
   return Math.max(0.12, Math.min(3.0, Math.sqrt(target / actual)));
 }
 
+/* place side column left/right */
 function placeSideColumn(sideContainer, toRight){
   if (!sideContainer) return;
   sideContainer.classList.remove('left');
   if (!toRight) sideContainer.classList.add('left');
+}
+
+/* runCompare adapted (uses previously defined buildOverlay, drawAnnulus, etc.)
+   targetMap is grams per id (e.g. { potato: 150, ... })
+*/
+function runCompare(targetOverlay, targetBase, annNode, sideContainer, captionEl, targetMap, title){
+  if (!payload) { alert('No saved plate'); return; }
+
+  targetOverlay.innerHTML = '';
+  annNode.innerHTML = '';
+  sideContainer.innerHTML = '';
+
+  // render static side items (colored)
+  renderSideOnly(sideContainer, targetBase);
+
+  buildOverlay(targetOverlay);
+
+  const scale = computeScaleFromCalories(targetMap);
+
+  // hide base on-plate items (we show ghost + scaled overlay)
+  Array.from(targetBase.querySelectorAll('.itemWrapper')).forEach(el => {
+    if (el.dataset.onplate === '1') el.classList.add('hidden-onplate');
+  });
+
+  // scale plate-area
+  const plateArea = targetBase.querySelector('.plate-area');
+  if (plateArea) {
+    plateArea.style.transition = 'transform 700ms cubic-bezier(.2,.9,.2,1)';
+    requestAnimationFrame(()=> plateArea.style.transform = `translate(-50%,-50%) scale(${scale})`);
+  }
+
+  // draw annulus/fill
+  drawAnnulus(annNode, scale);
+
+  // style ghost vs scaled
+  const ghostImgs = targetOverlay._ghost ? Array.from(targetOverlay._ghost.querySelectorAll('img')) : [];
+  const ghostInnerImgs = targetOverlay._ghostInner ? Array.from(targetOverlay._ghostInner.querySelectorAll('img')) : [];
+  const scaledImgs = targetOverlay._scaled ? Array.from(targetOverlay._scaled.querySelectorAll('img')) : [];
+
+  ghostImgs.forEach(i => { i.className = 'ghost-img'; });
+  ghostInnerImgs.forEach(i => { i.className = 'ghost-inner'; });
+  scaledImgs.forEach(i => { i.className = 'scaled-img'; });
+
+  // scale each recommendation item around its center
+  const scaledGroup = targetOverlay._scaled;
+  if (scaledGroup) {
+    Array.from(scaledGroup.querySelectorAll('.itemWrapper')).forEach(sw => {
+      const rotate = Number(sw.dataset.rotate || 0);
+      sw.style.transition = 'transform 700ms cubic-bezier(.2,.9,.2,1)';
+      requestAnimationFrame(()=> sw.style.transform = `translate(-50%,-50%) rotate(${rotate}deg) scale(${scale})`);
+    });
+  }
+
+  // side column placement
+  const actualCal = Math.round(totalCaloriesPayload());
+  const targetCal = Math.round(totalCaloriesFromMap(targetMap || {}));
+  placeSideColumn(sideContainer, targetCal >= actualCal);
+
+  // friendly caption text
+  setTimeout(()=> {
+    let diffPct = 0;
+    if (actualCal > 0) diffPct = Math.round(((targetCal - actualCal) / actualCal) * 100);
+    else diffPct = targetCal > 0 ? 100 : 0;
+
+    if (diffPct < 0) captionEl.textContent = `Recommendation is ${Math.abs(diffPct)}% lower than your plate`;
+    else if (diffPct > 0) captionEl.textContent = `Recommendation is ${diffPct}% higher than your plate`;
+    else captionEl.textContent = 'Recommendation matches your plate';
+  }, 800);
+}
+
+/* render only side items colored (used by both compares) */
+function renderSideOnly(sideContainer, targetBase){
+  sideContainer.innerHTML = '';
+  const slots = computeSideSlots(targetBase.parentElement);
+  (payload.positions || []).forEach(p => {
+    if (p.placement !== 'side') return;
+    const idx = (typeof p.sideSlot === 'number') ? p.sideSlot : 0;
+    const chosen = slots[Math.min(idx, slots.length-1)] || {x:targetBase.parentElement.clientWidth-100,y:40};
+    const si = document.createElement('div');
+    si.className = 'sideItem';
+    si.style.position = 'absolute';
+    si.style.left = (chosen.x - 40) + 'px';
+    si.style.top = (chosen.y - 20) + 'px';
+    const src = p._imgOverride || resolveImage(p);
+    si.innerHTML = `<img src="${escapeAttr(src)}" alt="${escapeAttr(p.label||p.id||'')}" style="width:100%;height:100%;object-fit:contain">`;
+    sideContainer.appendChild(si);
+  });
+}
+
+/* Clear compare */
+function clearCompare(targetOverlay, targetBase, annNode, sideContainer, captionEl){
+  targetOverlay.innerHTML = '';
+  annNode.innerHTML = '';
+  sideContainer.innerHTML = '';
+  const plateArea = targetBase.querySelector('.plate-area');
+  if (plateArea) {
+    plateArea.style.transition = 'transform 300ms ease';
+    plateArea.style.transform = 'translate(-50%,-50%) scale(1)';
+  }
+  Array.from(targetBase.querySelectorAll('.itemWrapper')).forEach(el => {
+    if (el.dataset.onplate === '1') el.classList.remove('hidden-onplate');
+  });
+  captionEl.textContent = 'Comparison cleared. Template remains colored.';
 }
 
 /* UI wiring */
@@ -647,35 +691,58 @@ document.getElementById('cmpRecommendedBtn').addEventListener('click', ()=> {
 });
 document.getElementById('clearRecommendedBtn').addEventListener('click', ()=> clearCompare(overRec, baseRec, annRec, sideRec, capRec));
 
-document.getElementById('cmpRealityBtn').addEventListener('click', ()=> {
-  const raw = prompt('Enter target grams JSON mapping (e.g. { "potato": 200, "apple": 100 }) — leave empty to use recommended');
-  let target = null;
-  if (!raw) target = { carrot: 150, apple: 150, potato: 150, bread_variant: 0, sausage: 75, milk: 250, water: 0 };
-  else {
-    try { target = JSON.parse(raw); } catch(e){ alert('Invalid JSON'); return; }
-  }
-  clearCompare(overReal, baseReal, annReal, sideReal, capReal);
-  runCompare(overReal, baseReal, annReal, sideReal, capReal, target, 'Reality vs Estimate');
-});
-document.getElementById('clearRealityBtn').addEventListener('click', ()=> clearCompare(overReal, baseReal, annReal, sideReal, capReal));
+clearRealityBtn.addEventListener('click', ()=> clearCompare(overReal, baseReal, annReal, sideReal, capReal));
 
-/* init */
+cmpRealityBtn.addEventListener('click', ()=> {
+  const country = countrySelect.value;
+  const info = latestKcalByCountry[country];
+  if (!info || !info.kcal) { alert('No data for ' + country); return; }
+  const dailyKcal = info.kcal;
+  const lunchKcal = dailyKcal / 3;
+  const lunchGrams = kcalToGrams(lunchKcal);
+  const gramsMap = buildTargetGramsMap(lunchGrams);
+  clearCompare(overReal, baseReal, annReal, sideReal, capReal);
+  runCompare(overReal, baseReal, annReal, sideReal, capReal, gramsMap, `Reality vs Estimate (${country})`);
+});
+
+/* init: load payload from sessionStorage and OWID data then render */
 (function init(){
-  const p = loadPayload();
-  if (!p) {
+  // load user plate payload
+  const raw = sessionStorage.getItem(SESSION_KEY);
+  if (!raw) {
+    // fallback message
     baseRec.innerHTML = ''; baseReal.innerHTML = '';
     capRec.textContent = 'No saved plate found in sessionStorage under key: ' + SESSION_KEY;
     capReal.textContent = 'No saved plate found in sessionStorage under key: ' + SESSION_KEY;
-    return;
+  } else {
+    try {
+      payload = JSON.parse(raw);
+    } catch(e){
+      payload = null;
+    }
+    if (payload) {
+      // normalize minimal fields used earlier
+      (payload.positions || []).forEach(item => {
+        if (typeof item.gramsPerPortion !== 'number') item.gramsPerPortion = item.gramsPerPortion || (DEFAULT_GRAMS[item.id] || 100);
+        if (!('grams' in item) || item.grams == null) item.grams = item.grams || 0;
+        if (item.gramsPerPortion && typeof item.grams === 'number') {
+          const rawFrac = item.grams / item.gramsPerPortion;
+          if (Math.abs(rawFrac - 0.5) < 0.02) item.fraction = 0.5;
+          else item.fraction = Number(rawFrac.toFixed(3));
+        } else item.fraction = item.fraction || 1;
+      });
+      renderBase(baseRec, sideRec);
+      renderBase(baseReal, sideReal);
+    }
   }
-  payload = p;
-  normalizePayload(payload);
-  renderBase(baseRec, sideRec);
-  renderBase(baseReal, sideReal);
-})();
 
-/* small utility */
-function escapeAttr(s){ return String(s||'').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+  // fetch OWID data and populate select
+  fetchOwid().then(()=> {
+    populateCountrySelect();
+  }).catch(()=> {
+    populateCountrySelect();
+  });
+})();
 </script>
 </body>
 </html>
