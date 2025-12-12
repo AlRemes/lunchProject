@@ -3,7 +3,7 @@
 
 <head>
   <meta charset="utf-8" />
-  <title>Build-a-Plate (fractions & grams)</title>
+  <title>Build-a-Plate </title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <style>
     body {
@@ -187,7 +187,7 @@
 </head>
 
 <body>
-  <h3>Build a Plate — click to add</h3>
+  <h3>Build a Plate — click to add (supports 1, 1/2, small portions)</h3>
 
   <div id="top">
     <div id="palette">
@@ -208,6 +208,8 @@
     <label>Name (optional) <input id="name" type="text" /></label>
     <button id="clear">Clear plate</button>
     <button id="gotoCompare">Compare page</button>
+    <div id="submitStatus"></div>
+    <div id="payloadBox"></div>
     <div id="summary"></div>
   </div>
 
@@ -226,7 +228,7 @@
         milk: 62
       };
 
-      const state = { placedInstances: [], totalCalories: 0 };
+      const state = { placedInstances: [], totalCalories: 0 }; 
 
       const FOOD_CATALOG = [
         { id: 'potato', label: 'Potato', kcal: 160, gramsPerPortion: 150, img: 'images/potato.svg', placement: 'onplate' },
@@ -273,7 +275,7 @@
         pc.appendChild(btn1);
         if (fractionalAllowed) {
           const btn2 = document.createElement('button'); btn2.textContent = '1/2'; btn2.title = 'Add half portion';
-          const btn4 = document.createElement('button'); btn4.textContent = 'small'; btn4.title = 'Add smallest portion';
+          const btn4 = document.createElement('button'); btn4.textContent = 'small'; btn4.title = 'Add small portion';
           pc.appendChild(btn4); pc.appendChild(btn2);
           btn2.addEventListener('click', (e) => { e.stopPropagation(); addInstanceToPlate(item.id, 0.5); });
           btn4.addEventListener('click', (e) => { e.stopPropagation(); addInstanceToPlate(item.id, 0.25); });
@@ -281,7 +283,6 @@
         btn1.addEventListener('click', (e) => { e.stopPropagation(); addInstanceToPlate(item.id, 1); });
         el.appendChild(pc);
 
-        // Bread-specific options: add butter / add cheese (upgrade behavior)
         if (item.hasOptions) {
           const opts = document.createElement('div');
           opts.style.marginTop = '6px';
@@ -314,7 +315,6 @@
                 _imgOverride: optsLocal.img
               });
             } else {
-              // add new variant to a side slot
               const slot = reserveSideSlot();
               state.placedInstances.push({
                 id: 'bread_variant',
@@ -336,14 +336,12 @@
             upsertBreadVariant({ label: 'Bread with butter', kcalAdd: 102, img: 'images/bread-with-butter.svg' });
           });
 
-          // add cheese: upgrade to butter+cheese
           btnAddCheese.addEventListener('click', (ev) => {
             ev.stopPropagation();
             upsertBreadVariant({ label: 'Bread with butter and cheese', kcalAdd: 102 + 110, img: 'images/cheese-bread.svg' });
           });
         }
 
-        // click main tile adds full portion
         el.addEventListener('click', (ev) => { addInstanceToPlate(item.id, 1); });
         return el;
       }
@@ -384,7 +382,6 @@
         return slots.length;
       }
 
-      // ADD with overlap avoidance, quantity is fraction (e.g., 1, 0.5, 0.25)
       function addInstanceToPlate(id, quantity = 1) {
         const item = catalogFind(id); if (!item) { console.warn('Unknown catalog id', id); return; }
         const gramsPer = item.gramsPerPortion || 100;
@@ -519,7 +516,6 @@
         html += '</ul>';
         sumDiv.innerHTML = html;
 
-        // store latest total calories in state for payload use
         state.totalCalories = totalKcal;
       }
 
@@ -530,7 +526,7 @@
           name: document.getElementById('name').value || '',
           timestamp: new Date().toISOString(),
           sessionLabel: 'Local session',
-          totalCalories: state.totalCalories || 0, // include total calories for compare.html
+          totalCalories: state.totalCalories || 0,
           positions: state.placedInstances.map(it => ({
             id: it.id, label: it.label, grams: it.grams,
             x: it.x, y: it.y, sizePx: it.sizePx, rotationDeg: it.rotationDeg,
@@ -541,19 +537,19 @@
         box.style.display = 'block';
         box.textContent = JSON.stringify(payload, null, 2);
         document.getElementById('submitStatus').textContent = 'Prepared payload (saved to sessionStorage)';
-        // save fallback for compare page
+        
         sessionStorage.setItem('plate_positions_fallback', JSON.stringify(payload));
         setTimeout(() => { document.getElementById('submitStatus').textContent = ''; }, 1600);
       });
 
-      // "Compare page" button: ensure the payload is saved (fallback) and navigate
+      
       document.getElementById('gotoCompare').addEventListener('click', () => {
         if (!state.placedInstances || state.placedInstances.length === 0) { alert('Build the plate first'); return; }
         const payload = {
           name: document.getElementById('name').value || '',
           timestamp: new Date().toISOString(),
           sessionLabel: 'Local session',
-          totalCalories: state.totalCalories || 0, // include total calories for compare.html
+          totalCalories: state.totalCalories || 0,
           positions: state.placedInstances.map(it => ({
             id: it.id, label: it.label, grams: it.grams,
             x: it.x, y: it.y, sizePx: it.sizePx, rotationDeg: it.rotationDeg,
@@ -561,7 +557,6 @@
           }))
         };
         sessionStorage.setItem('plate_positions_fallback', JSON.stringify(payload));
-        // navigate to compare page (will read sessionStorage fallback if no sessionId param)
         window.location.href = 'compare.html';
       });
 
@@ -574,7 +569,7 @@
       renderPlate();
       updateSummary();
 
-    });
+    }); 
   </script>
 
 </body>
