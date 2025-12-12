@@ -187,7 +187,7 @@
 </head>
 
 <body>
-  <h3>Build a Plate — click to add (supports 1, 1/2, 1/4 portions)</h3>
+  <h3>Build a Plate — click to add (supports 1, 1/2, small portions)</h3>
 
   <div id="top">
     <div id="palette">
@@ -207,7 +207,7 @@
   <div id="controls">
     <label>Name (optional) <input id="name" type="text" /></label>
     <button id="clear">Clear plate</button>
-    <button id="submit">Prepare payload</button>
+    <button style="display: none;" id="submit">Prepare payload</button>
     <button id="gotoCompare">Compare page</button>
     <div id="submitStatus"></div>
     <div id="payloadBox"></div>
@@ -229,7 +229,7 @@
         milk: 62
       };
 
-      const state = { placedInstances: [], totalCalories: 0 }; // grams-aware placed entries + totalCalories
+      const state = { placedInstances: [], totalCalories: 0 };
 
       // CATALOG — no separate bread_butter or bread_butter_cheese entries
       const FOOD_CATALOG = [
@@ -269,7 +269,7 @@
         el.dataset.id = item.id;
         el.innerHTML = `<img src="${item.img}" alt="${item.label}"><div><strong>${item.label}</strong><div class="small">${item.kcal} kcal/portion</div></div>`;
 
-        // fractional not allowed for water, milk, bread
+        // fractional not used for water, milk, bread
         const fractionalAllowed = !(item.id === 'water' || item.id === 'milk' || item.id === 'bread');
 
         const pc = document.createElement('div'); pc.className = 'portion-controls';
@@ -277,7 +277,7 @@
         pc.appendChild(btn1);
         if (fractionalAllowed) {
           const btn2 = document.createElement('button'); btn2.textContent = '1/2'; btn2.title = 'Add half portion';
-          const btn4 = document.createElement('button'); btn4.textContent = '1/4'; btn4.title = 'Add quarter portion';
+          const btn4 = document.createElement('button'); btn4.textContent = 'small'; btn4.title = 'Add quarter portion';
           pc.appendChild(btn4); pc.appendChild(btn2);
           btn2.addEventListener('click', (e) => { e.stopPropagation(); addInstanceToPlate(item.id, 0.5); });
           btn4.addEventListener('click', (e) => { e.stopPropagation(); addInstanceToPlate(item.id, 0.25); });
@@ -300,7 +300,6 @@
 
           function upsertBreadVariant(optsLocal = {}) {
             const breadMeta = FOOD_CATALOG.find(c => c.id === 'bread');
-            // find any existing side bread or bread_variant
             const sideIndex = state.placedInstances.findIndex(p => (p.placement === 'side') && (p.id === 'bread' || p.id === 'bread_variant'));
             const kcalBase = breadMeta ? breadMeta.kcal : 80;
             const gramsBase = breadMeta ? breadMeta.gramsPerPortion : 40;
@@ -319,7 +318,6 @@
                 _imgOverride: optsLocal.img
               });
             } else {
-              // add new variant to a side slot
               const slot = reserveSideSlot();
               state.placedInstances.push({
                 id: 'bread_variant',
@@ -336,20 +334,17 @@
             renderPlate(); updateSummary();
           }
 
-          // add butter: +102 kcal example, image path assumed present
           btnAddButter.addEventListener('click', (ev) => {
             ev.stopPropagation();
             upsertBreadVariant({ label: 'Bread with butter', kcalAdd: 102, img: 'images/bread-with-butter.svg' });
           });
 
-          // add cheese: upgrade to butter+cheese (or create variant)
           btnAddCheese.addEventListener('click', (ev) => {
             ev.stopPropagation();
             upsertBreadVariant({ label: 'Bread with butter and cheese', kcalAdd: 102 + 110, img: 'images/cheese-bread.svg' });
           });
         }
 
-        // click main tile adds full portion
         el.addEventListener('click', (ev) => { addInstanceToPlate(item.id, 1); });
         return el;
       }
@@ -391,7 +386,6 @@
         return slots.length;
       }
 
-      // ADD with overlap avoidance, quantity is fraction (e.g., 1, 0.5, 0.25)
       function addInstanceToPlate(id, quantity = 1) {
         const item = catalogFind(id); if (!item) { console.warn('Unknown catalog id', id); return; }
         const gramsPer = item.gramsPerPortion || 100;
@@ -455,7 +449,6 @@
           wrapper.style.pointerEvents = 'auto';
 
           const innerImg = document.createElement('img');
-          // prefer instance override (bread_variant) image when present
           const imgPath = inst._imgOverride || (catalogItem.img || ('images/' + inst.id + '.svg'));
           innerImg.src = imgPath;
           innerImg.alt = inst.label || inst.id;
@@ -469,12 +462,10 @@
             innerImg.style.opacity = '1';
             innerImg.classList.remove('clip-half');
           } else if (Math.abs(fraction - 0.5) < 0.001) {
-            // half: diagonal top-left -> bottom-right
             innerImg.style.transform = 'scale(1)';
             innerImg.style.opacity = '1';
             innerImg.classList.add('clip-half');
           } else {
-            // quarter or other fractional: scale inside wrapper
             const imgScale = Math.max(0.25, Math.min(1.0, fraction));
             innerImg.style.transform = `scale(${imgScale})`;
             innerImg.style.opacity = '1';
@@ -484,8 +475,6 @@
           wrapper.addEventListener('click', () => { state.placedInstances.splice(idx, 1); renderPlate(); updateSummary(); });
           wrapper.appendChild(innerImg);
 
-          // badge hidden on plate per request
-          // if (fraction !== 1) { const badge = document.createElement('div'); badge.className='fraction-badge'; badge.textContent = (fraction===0.5?'1/2':(fraction===0.25?'1/4':fraction.toString())); wrapper.appendChild(badge); }
 
           if (inst.placement === 'onplate') {
             wrapper.style.left = inst.x + 'px';
@@ -532,19 +521,19 @@
         html += '</ul>';
         sumDiv.innerHTML = html;
 
-        // store latest total calories in state for payload use
+
         state.totalCalories = totalKcal;
       }
 
       document.getElementById('clear').addEventListener('click', () => { state.placedInstances = []; renderPlate(); updateSummary(); });
 
-      // Prepare payload (shows payload and stores fallback for compare page)
+
       document.getElementById('submit').addEventListener('click', () => {
         const payload = {
           name: document.getElementById('name').value || '',
           timestamp: new Date().toISOString(),
           sessionLabel: 'Local session',
-          totalCalories: state.totalCalories || 0, // include total calories for compare.html
+          totalCalories: state.totalCalories || 0,
           positions: state.placedInstances.map(it => ({
             id: it.id, label: it.label, grams: it.grams,
             x: it.x, y: it.y, sizePx: it.sizePx, rotationDeg: it.rotationDeg,
@@ -555,19 +544,18 @@
         box.style.display = 'block';
         box.textContent = JSON.stringify(payload, null, 2);
         document.getElementById('submitStatus').textContent = 'Prepared payload (saved to sessionStorage)';
-        // save fallback for compare page
+
         sessionStorage.setItem('plate_positions_fallback', JSON.stringify(payload));
         setTimeout(() => { document.getElementById('submitStatus').textContent = ''; }, 1600);
       });
 
-      // "Compare page" button: ensure the payload is saved (fallback) and navigate
       document.getElementById('gotoCompare').addEventListener('click', () => {
         if (!state.placedInstances || state.placedInstances.length === 0) { alert('Build the plate first'); return; }
         const payload = {
           name: document.getElementById('name').value || '',
           timestamp: new Date().toISOString(),
           sessionLabel: 'Local session',
-          totalCalories: state.totalCalories || 0, // include total calories for compare.html
+          totalCalories: state.totalCalories || 0,
           positions: state.placedInstances.map(it => ({
             id: it.id, label: it.label, grams: it.grams,
             x: it.x, y: it.y, sizePx: it.sizePx, rotationDeg: it.rotationDeg,
@@ -575,7 +563,6 @@
           }))
         };
         sessionStorage.setItem('plate_positions_fallback', JSON.stringify(payload));
-        // navigate to compare page (will read sessionStorage fallback if no sessionId param)
         window.location.href = 'compare.html';
       });
 
@@ -585,11 +572,11 @@
       window.renderPlate = renderPlate;
       window.updateSummary = updateSummary;
 
-      // initial render
+
       renderPlate();
       updateSummary();
 
-    }); // DOMContentLoaded
+    }); 
   </script>
 
 </body>
