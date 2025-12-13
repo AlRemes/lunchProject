@@ -318,7 +318,7 @@
                 <div class="panelHeader">
                     <div class="panelTitle">Compare to Reality</div>
                     <a href="https://ourworldindata.org/grapher/daily-per-capita-caloric-supply?tab=table&time=latest&country=GBR~FIN~Eastern+Asia+%28FAO%29~TZA" target="_blank">
-                    Daily per capita caloric supply data. (Source for reality)
+                    Daily per capita caloric supply data. (Source for reality data)
                     </a>
                     <div style="flex:1"></div>
                     <div class="controlsRow">
@@ -354,7 +354,6 @@
         const LOCAL_CSV = 'daily-per-capita-caloric-supply.csv';
         const LOCAL_META = 'daily-per-capita-caloric-supply.metadata.json';
 
-        /* Image catalog: include explicit keys for bread variants so bread-with-butter maps correctly */
         const CATALOG_IMG = {
             potato: 'images/potato.svg',
             sausage: 'images/sausage.svg',
@@ -667,7 +666,6 @@
         function totalCaloriesPayload() { if (payload && typeof payload.totalCalories === 'number') return Math.max(0, Math.round(payload.totalCalories)); return Math.max(0, Math.round(totalCaloriesPayloadFromPositions(payload.positions || []))); }
         function computeScaleFromCalories(targetMap) { const actual = Math.max(1, totalCaloriesPayload()); const target = Math.max(0, totalCaloriesFromMap(targetMap || {})); if (target <= 0) return 0.001; return Math.max(0.12, Math.min(3.0, Math.sqrt(target / actual))); }
 
-        /* Compare logic (reality caption updated) */
         function placeSideColumn(sideContainer, toRight) { if (!sideContainer) return; sideContainer.classList.remove('left'); if (!toRight) sideContainer.classList.add('left'); }
 
         function renderSideOnly(sideContainer, targetBase) {
@@ -762,7 +760,7 @@
         document.getElementById('resetAllBtn').addEventListener('click', () => { clearCompare(overRec, baseRec, annRec, sideRec, capRec); clearCompare(overReal, baseReal, annReal, sideReal, capReal); });
 
         document.getElementById('cmpRecommendedBtn').addEventListener('click', () => {
-            const recommendedDaily = 2000; // kcal/day 
+            const recommendedDaily = 2000; 
             const lunchKcal = recommendedDaily / 3;
             const lunchGrams = kcalToGrams(lunchKcal);
             const recommendedMap = buildTargetGramsMap(lunchGrams);
